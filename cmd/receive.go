@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -42,6 +43,14 @@ func runReceive(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	taskID := task.ID
+
+	if strings.TrimSpace(receiveAgent) == "" {
+		return fmt.Errorf("--agent must not be empty")
+	}
+	// Rejecting stays allowed so stale handoffs on finished tasks can be cleared
+	if !receiveReject && (task.IsClosed() || task.IsArchived()) {
+		return fmt.Errorf("cannot accept handoff for task '%s': task is %s (use --reject to clear it, or reopen the task first)", taskID, task.Status)
+	}
 
 	// Find most recent pending handoff for this task+agent
 	var h models.Handoff

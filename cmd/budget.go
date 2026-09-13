@@ -15,6 +15,7 @@ var budgetWarn int64
 var budgetCmd = &cobra.Command{
 	Use:   "budget",
 	Short: "Show token usage summary across open tasks",
+	Args:  cobra.NoArgs,
 	RunE:  runBudget,
 }
 
@@ -24,6 +25,10 @@ func init() {
 }
 
 func runBudget(cmd *cobra.Command, args []string) error {
+	if budgetWarn < 0 {
+		return fmt.Errorf("invalid --warn %d: must be zero or greater", budgetWarn)
+	}
+
 	var tasks []models.Task
 	err := db.GetDB().
 		Where("status IN ? AND (tokens_used > 0 OR tokens_budget > 0)", []string{models.StatusOpen, models.StatusInProgress}).

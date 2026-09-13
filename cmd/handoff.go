@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -47,6 +48,9 @@ func runHandoff(cmd *cobra.Command, args []string) error {
 	if handoffSummary == "" && handoffContext == "" {
 		return fmt.Errorf("at least one of --summary or --context is required")
 	}
+	if strings.TrimSpace(handoffFrom) == "" || strings.TrimSpace(handoffTo) == "" {
+		return fmt.Errorf("--from and --to must not be empty")
+	}
 
 	// Resolve task (supports prefix matching).
 	task, err := resolveTaskID(args[0])
@@ -56,6 +60,9 @@ func runHandoff(cmd *cobra.Command, args []string) error {
 	taskID := task.ID
 	if task.IsClosed() {
 		return fmt.Errorf("cannot hand off task '%s': task is closed (reopen it first with 'gur reopen %s')", taskID, taskID)
+	}
+	if task.IsArchived() {
+		return fmt.Errorf("cannot hand off task '%s': task is archived (restore it first with 'gur unarchive %s')", taskID, taskID)
 	}
 
 	// Validate JSON if provided

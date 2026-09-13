@@ -23,9 +23,27 @@ var hookAddCmd = &cobra.Command{
 Valid events: on-create, on-update, on-close, on-reopen
 
 The command receives environment variables:
-  GUR_TASK_ID, GUR_TASK_TITLE, GUR_TASK_STATUS, GUR_EVENT`,
+  GUR_TASK_ID, GUR_TASK_TITLE, GUR_TASK_STATUS, GUR_EVENT
+
+CLI commands wait for hooks to finish (each is killed after 30s), so keep them fast
+or background long work yourself (e.g. 'my-script &'). The MCP server runs hooks
+in the background. A failing hook prints a warning but never fails the command.`,
 	Args: cobra.ExactArgs(2),
 	RunE: runHookAdd,
+}
+
+var hookEnableCmd = &cobra.Command{
+	Use:   "enable <id>",
+	Short: "Enable a hook",
+	Args:  cobra.ExactArgs(1),
+	RunE:  func(cmd *cobra.Command, args []string) error { return setHookEnabled(args[0], true) },
+}
+
+var hookDisableCmd = &cobra.Command{
+	Use:   "disable <id>",
+	Short: "Disable a hook without removing it",
+	Args:  cobra.ExactArgs(1),
+	RunE:  func(cmd *cobra.Command, args []string) error { return setHookEnabled(args[0], false) },
 }
 
 var hookListCmd = &cobra.Command{
@@ -56,6 +74,31 @@ func init() {
 	hookCmd.AddCommand(hookListCmd)
 	hookCmd.AddCommand(hookRemoveCmd)
 	hookCmd.AddCommand(hookTestCmd)
+	hookCmd.AddCommand(hookEnableCmd)
+	hookCmd.AddCommand(hookDisableCmd)
+}
+
+// setHookEnabled toggles a hook. It uses an explicit column update because
+// the Enabled field's default:true tag makes gorm skip a false value on Create/Save.
+func setHookEnabled(id string, enabled bool) error {
+	result := db.GetDB().Model(&models.Hook{}).Where("id = ?", id).Update("enabled", enabled)
+	if result.Error != nil {
+		return fmt.Errorf("failed to update hook: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("hook '%s' not found (use 'gur hook list' to see hooks)", id)
+	}
+
+	state := "disabled"
+	if enabled {
+		state = "enabled"
+	}
+	if IsJSONOutput() {
+		OutputJSON(map[string]interface{}{"id": id, "enabled": enabled})
+		return nil
+	}
+	fmt.Printf("Hook %s %s\n", id, state)
+	return nil
 }
 
 func runHookAdd(cmd *cobra.Command, args []string) error {

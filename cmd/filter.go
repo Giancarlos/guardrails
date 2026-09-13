@@ -110,7 +110,7 @@ func runFilterList(cmd *cobra.Command, args []string) error {
 		Filter SavedFilter `json:"filter"`
 	}
 
-	var entries []filterEntry
+	entries := []filterEntry{}
 	for _, c := range configs {
 		name := strings.TrimPrefix(c.Key, filterKeyPrefix)
 		var sf SavedFilter

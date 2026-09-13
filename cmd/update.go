@@ -3,10 +3,12 @@ package cmd
 import (
 	"bufio"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"golang.org/x/term"
 
 	"github.com/Giancarlos/guardrails/internal/db"
@@ -78,9 +80,23 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 	if cmd.Flags().Changed("tokens-budget") && updateTokensBudget < 0 {
 		return fmt.Errorf("invalid --tokens-budget %d: must be zero or greater", updateTokensBudget)
 	}
-	if cmd.Flags().Changed("tokens-add") && task.TokensUsed+updateTokensAdd < 0 {
-		return fmt.Errorf("invalid --tokens-add %d: token usage cannot go below zero (currently %d)", updateTokensAdd, task.TokensUsed)
+	if cmd.Flags().Changed("tokens-add") {
+		if updateTokensAdd > 0 && task.TokensUsed > math.MaxInt64-updateTokensAdd {
+			return fmt.Errorf("invalid --tokens-add %d: token usage would overflow (currently %d)", updateTokensAdd, task.TokensUsed)
+		}
+		if task.TokensUsed+updateTokensAdd < 0 {
+			return fmt.Errorf("invalid --tokens-add %d: token usage cannot go below zero (currently %d)", updateTokensAdd, task.TokensUsed)
+		}
 	}
+
+	// Only flags defined on 'update' itself count as changes (not --json/--compact)
+	hasChanges := false
+	cmd.LocalFlags().VisitAll(func(f *pflag.Flag) {
+		if f.Changed {
+			hasChanges = true
+		}
+	})
+	tokensChanged := cmd.Flags().Changed("tokens-used") || cmd.Flags().Changed("tokens-add") || cmd.Flags().Changed("tokens-budget")
 
 	// Track changes for audit trail
 	database := db.GetDB()
@@ -253,8 +269,8 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 		task.TokensBudget = updateTokensBudget
 	}
 
-	// Warn if token usage exceeds budget
-	if task.TokensBudget > 0 && task.TokensUsed > task.TokensBudget {
+	// Warn if a token change leaves usage over budget
+	if tokensChanged && task.TokensBudget > 0 && task.TokensUsed > task.TokensBudget {
 		fmt.Fprintf(os.Stderr, "WARNING: Token usage (%d) exceeds budget (%d) for task %s\n", task.TokensUsed, task.TokensBudget, task.ID)
 	}
 
@@ -262,7 +278,9 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to update task '%s': database error: %w", task.ID, err)
 	}
 
-	models.RunHooks(database, models.HookEventOnUpdate, task)
+	if hasChanges {
+		models.RunHooks(database, models.HookEventOnUpdate, task)
+	}
 
 	if IsJSONOutput() {
 		OutputJSON(map[string]interface{}{"success": true, "task": task})

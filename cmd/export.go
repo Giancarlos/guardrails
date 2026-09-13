@@ -34,6 +34,13 @@ func init() {
 }
 
 func runExport(cmd *cobra.Command, args []string) (err error) {
+	// Validate the format before creating (and truncating) any output file
+	switch exportFormat {
+	case "json", "csv", "markdown", "md":
+	default:
+		return fmt.Errorf("unsupported format '%s': use json, csv, or markdown", exportFormat)
+	}
+
 	query := db.GetDB().Order("priority ASC, created_at DESC")
 
 	if exportStatus != "" {

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -63,7 +64,7 @@ func init() {
 	templateCreateCmd.Flags().StringVar(&tmplType, "type", models.TypeTask, "Default type (task, bug, feature, epic)")
 	templateCreateCmd.Flags().StringVar(&tmplDescription, "description", "", "Default description")
 	templateCreateCmd.Flags().StringSliceVar(&tmplLabels, "label", nil, "Default labels")
-	templateCreateCmd.Flags().StringArrayVar(&tmplVars, "var", nil, "Declare template variable names")
+	templateCreateCmd.Flags().StringSliceVar(&tmplVars, "var", nil, "Declare template variable names (repeat or comma-separate)")
 }
 
 func runTemplateCreate(cmd *cobra.Command, args []string) error {
@@ -71,6 +72,12 @@ func runTemplateCreate(cmd *cobra.Command, args []string) error {
 	title := ""
 	if len(args) > 1 {
 		title = args[1]
+	}
+
+	for _, v := range tmplVars {
+		if strings.TrimSpace(v) == "" || strings.ContainsAny(v, "{}= ") {
+			return fmt.Errorf("invalid --var name '%s': must be non-empty with no spaces, braces, or '='", v)
+		}
 	}
 
 	// Check if template already exists

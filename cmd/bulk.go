@@ -164,27 +164,29 @@ func queryMatchingTasks() ([]models.Task, error) {
 	return tasks, nil
 }
 
-// closeBlockReason mirrors the non-forced blocker and subtask checks in 'gur close'.
-// Returns an empty string if neither prevents closing.
-func closeBlockReason(database *gorm.DB, taskID string) string {
-	var blockerCount int64
+// closeBlockers mirrors the non-forced blocker and subtask checks in 'gur close',
+// returning the IDs of open blockers and open subtasks that prevent closing a task.
+func closeBlockers(database *gorm.DB, taskID string) (blockers, subtasks []string) {
 	database.Model(&models.Dependency{}).
 		Joins("JOIN tasks ON tasks.id = dependencies.parent_id").
 		Where("dependencies.child_id = ? AND dependencies.type = ? AND tasks.status != ?",
 			taskID, models.DepTypeBlocks, models.StatusClosed).
-		Count(&blockerCount)
-	if blockerCount > 0 {
-		return fmt.Sprintf("blocked by %d open task(s)", blockerCount)
-	}
-
-	var openSubtasks int64
+		Pluck("dependencies.parent_id", &blockers)
 	database.Model(&models.Task{}).
 		Where("parent_id = ? AND status != ?", taskID, models.StatusClosed).
-		Count(&openSubtasks)
-	if openSubtasks > 0 {
-		return fmt.Sprintf("%d open subtask(s)", openSubtasks)
+		Pluck("id", &subtasks)
+	return blockers, subtasks
+}
+
+// countNotIn returns how many ids are not in the set
+func countNotIn(ids []string, set map[string]bool) int {
+	n := 0
+	for _, id := range ids {
+		if !set[id] {
+			n++
+		}
 	}
-	return ""
+	return n
 }
 
 func runBulkUpdate(cmd *cobra.Command, args []string) error {
@@ -317,6 +319,10 @@ func runBulkUpdate(cmd *cobra.Command, args []string) error {
 }
 
 func runBulkClose(cmd *cobra.Command, args []string) error {
+	if strings.TrimSpace(bulkCloseReason) == "" {
+		return fmt.Errorf("--reason must not be empty")
+	}
+
 	tasks, err := queryMatchingTasks()
 	if err != nil {
 		return err
@@ -339,26 +345,54 @@ func runBulkClose(cmd *cobra.Command, args []string) error {
 		canClose bool
 		reason   string
 	}
-	var results []closeResult
+	type candidate struct {
+		blockers []string
+		subtasks []string
+		gatesOK  bool
+	}
+	results := make([]closeResult, len(tasks))
+	candidates := make(map[string]*candidate)
 
-	for _, task := range tasks {
-		if task.IsClosed() {
-			results = append(results, closeResult{task: task, canClose: false, reason: "already closed"})
+	for i, task := range tasks {
+		results[i] = closeResult{task: task}
+		switch {
+		case task.IsClosed():
+			results[i].reason = "already closed"
+		case task.IsArchived():
+			results[i].reason = "archived"
+		default:
+			blockers, subtasks := closeBlockers(database, task.ID)
+			candidates[task.ID] = &candidate{blockers: blockers, subtasks: subtasks, gatesOK: CheckGatesBeforeClose(task.ID) == nil}
+		}
+	}
+
+	// Blockers and subtasks that are themselves closed in this batch don't block,
+	// so repeatedly admit tasks whose remaining blockers/subtasks are all being closed
+	closing := make(map[string]bool)
+	for progress := true; progress; {
+		progress = false
+		for id, c := range candidates {
+			if !closing[id] && c.gatesOK && countNotIn(c.blockers, closing) == 0 && countNotIn(c.subtasks, closing) == 0 {
+				closing[id] = true
+				progress = true
+			}
+		}
+	}
+
+	for i := range results {
+		c, ok := candidates[results[i].task.ID]
+		if !ok {
 			continue
 		}
-		if task.IsArchived() {
-			results = append(results, closeResult{task: task, canClose: false, reason: "archived"})
-			continue
-		}
-		if reason := closeBlockReason(database, task.ID); reason != "" {
-			results = append(results, closeResult{task: task, canClose: false, reason: reason})
-			continue
-		}
-		gateErr := CheckGatesBeforeClose(task.ID)
-		if gateErr != nil {
-			results = append(results, closeResult{task: task, canClose: false, reason: "gates not passed"})
-		} else {
-			results = append(results, closeResult{task: task, canClose: true})
+		switch {
+		case closing[results[i].task.ID]:
+			results[i].canClose = true
+		case countNotIn(c.blockers, closing) > 0:
+			results[i].reason = fmt.Sprintf("blocked by %d open task(s)", countNotIn(c.blockers, closing))
+		case countNotIn(c.subtasks, closing) > 0:
+			results[i].reason = fmt.Sprintf("%d open subtask(s)", countNotIn(c.subtasks, closing))
+		default:
+			results[i].reason = "gates not passed"
 		}
 	}
 
@@ -373,7 +407,7 @@ func runBulkClose(cmd *cobra.Command, args []string) error {
 			}
 		}
 		if IsJSONOutput() {
-			var closeIDs, skipIDs []string
+			closeIDs, skipIDs := []string{}, []string{}
 			for _, r := range results {
 				if r.canClose {
 					closeIDs = append(closeIDs, r.task.ID)
@@ -435,7 +469,7 @@ func runBulkClose(cmd *cobra.Command, args []string) error {
 	}
 
 	if IsJSONOutput() {
-		var closedIDs, skippedIDs []string
+		closedIDs, skippedIDs := []string{}, []string{}
 		for _, r := range results {
 			if r.canClose {
 				closedIDs = append(closedIDs, r.task.ID)

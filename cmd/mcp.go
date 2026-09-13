@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -460,6 +461,20 @@ func getTools() []Tool {
 	}
 }
 
+// mcpHooks tracks hooks running in the background so the server can wait for them on exit
+var mcpHooks sync.WaitGroup
+
+// runHooksInBackground runs hooks without blocking the request loop;
+// a slow hook would otherwise stall every later MCP request.
+func runHooksInBackground(event string, task *models.Task) {
+	snapshot := *task
+	mcpHooks.Add(1)
+	go func() {
+		defer mcpHooks.Done()
+		models.RunHooks(db.GetDB(), event, &snapshot)
+	}()
+}
+
 func runMCPServe(cmd *cobra.Command, args []string) error {
 	// Initialize database for MCP server
 	if err := db.EnsureInitialized(); err != nil {
@@ -472,6 +487,8 @@ func runMCPServe(cmd *cobra.Command, args []string) error {
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
+			// Let hooks started by earlier requests finish before exiting
+			mcpHooks.Wait()
 			if err == io.EOF {
 				return nil
 			}
@@ -764,7 +781,7 @@ func toolTaskCreate(args map[string]interface{}) (ToolResult, error) {
 		return ToolResult{}, err
 	}
 
-	models.RunHooks(database, models.HookEventOnCreate, task)
+	runHooksInBackground(models.HookEventOnCreate, task)
 
 	return jsonResult(map[string]interface{}{"success": true, "task": task})
 }
@@ -781,14 +798,17 @@ func toolTaskUpdate(args map[string]interface{}) (ToolResult, error) {
 	}
 
 	database := db.GetDB()
+	changed := false
 
 	if title := getStringArg(args, "title"); title != "" {
 		models.RecordChange(database, task.ID, "title", task.Title, title, "mcp")
 		task.Title = title
+		changed = true
 	}
 	if desc := getStringArg(args, "description"); desc != "" {
 		models.RecordChange(database, task.ID, "description", task.Description, desc, "mcp")
 		task.Description = desc
+		changed = true
 	}
 	if priority := getIntArg(args, "priority", -1); priority >= 0 {
 		if priority > 4 {
@@ -796,6 +816,7 @@ func toolTaskUpdate(args map[string]interface{}) (ToolResult, error) {
 		}
 		models.RecordChange(database, task.ID, "priority", fmt.Sprintf("%d", task.Priority), fmt.Sprintf("%d", priority), "mcp")
 		task.Priority = priority
+		changed = true
 	}
 	if status := getStringArg(args, "status"); status != "" {
 		if status != models.StatusOpen && status != models.StatusInProgress {
@@ -803,21 +824,26 @@ func toolTaskUpdate(args map[string]interface{}) (ToolResult, error) {
 		}
 		models.RecordChange(database, task.ID, "status", task.Status, status, "mcp")
 		task.Status = status
+		changed = true
 	}
 	if assignee := getStringArg(args, "assignee"); assignee != "" {
 		models.RecordChange(database, task.ID, "assignee", task.Assignee, assignee, "mcp")
 		task.Assignee = assignee
+		changed = true
 	}
 	if notes := getStringArg(args, "notes"); notes != "" {
 		models.RecordChange(database, task.ID, "notes", "", notes, "mcp")
 		task.AppendNotes(notes)
+		changed = true
 	}
 
 	if err := database.Save(&task).Error; err != nil {
 		return ToolResult{}, err
 	}
 
-	models.RunHooks(database, models.HookEventOnUpdate, task)
+	if changed {
+		runHooksInBackground(models.HookEventOnUpdate, task)
+	}
 
 	return jsonResult(map[string]interface{}{"success": true, "task": task})
 }
@@ -879,7 +905,7 @@ func toolTaskClose(args map[string]interface{}) (ToolResult, error) {
 		return ToolResult{}, err
 	}
 
-	models.RunHooks(database, models.HookEventOnClose, task)
+	runHooksInBackground(models.HookEventOnClose, task)
 
 	return jsonResult(map[string]interface{}{"success": true, "task": task})
 }

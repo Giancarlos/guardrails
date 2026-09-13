@@ -309,7 +309,7 @@ func runTimerReport(cmd *cobra.Command, args []string) error {
 			Formatted string `json:"formatted"`
 			Entries   int64  `json:"entries"`
 		}
-		var jrows []jsonRow
+		jrows := []jsonRow{}
 		for _, r := range rows {
 			jrows = append(jrows, jsonRow{
 				TaskID:    r.TaskID,

@@ -217,8 +217,9 @@ func TestImportJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ImportTasks() merge call error: %v", err)
 	}
-	if updated3 != 2 {
-		t.Errorf("ImportTasks() merge call updated = %d, want 2", updated3)
+	// Only the first task changed; unchanged records count as skipped
+	if updated3 != 1 {
+		t.Errorf("ImportTasks() merge call updated = %d, want 1", updated3)
 	}
 
 	// Verify the update took effect

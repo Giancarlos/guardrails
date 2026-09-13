@@ -54,7 +54,7 @@ func runShow(cmd *cobra.Command, args []string) error {
 
 	// Fetch pending handoffs
 	var pendingHandoffs []models.Handoff
-	database.Where("task_id = ? AND status = ?", task.ID, models.HandoffPending).Find(&pendingHandoffs)
+	database.Where("task_id = ? AND status = ?", task.ID, models.HandoffPending).Order("created_at ASC").Find(&pendingHandoffs)
 
 	if IsJSONOutput() {
 		OutputJSON(map[string]interface{}{
@@ -121,7 +121,11 @@ func runShow(cmd *cobra.Command, args []string) error {
 			fmt.Printf("context:%s\n", task.ContextSummary)
 		}
 		if latestCheckpoint != nil {
-			fmt.Printf("checkpoint:%s %s\n", latestCheckpoint.ID, latestCheckpoint.StateText)
+			state := latestCheckpoint.StateText
+			if state == "" {
+				state = latestCheckpoint.StateJSON
+			}
+			fmt.Printf("checkpoint:%s %s\n", latestCheckpoint.ID, state)
 		}
 		if len(pendingHandoffs) > 0 {
 			parts := make([]string, len(pendingHandoffs))
@@ -217,6 +221,9 @@ func runShow(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  Created: %s\n", latestCheckpoint.CreatedAt.Format(models.DateTimeShortFormat))
 		if latestCheckpoint.StateText != "" {
 			fmt.Printf("  State:   %s\n", latestCheckpoint.StateText)
+		}
+		if latestCheckpoint.StateJSON != "" {
+			fmt.Printf("  Data:    %s\n", latestCheckpoint.StateJSON)
 		}
 	}
 
