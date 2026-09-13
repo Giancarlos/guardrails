@@ -1,0 +1,29 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "TaskCreate|TaskUpdate|TaskList|TaskGet",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'BLOCKED: Use gur MCP tools (task_list, task_create, etc.) instead of built-in task tools.' && exit 2"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "gur list --status in_progress 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/.claude/gur-status.sh\""
+  }
+}
