@@ -121,6 +121,8 @@ func runClose(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to close task '%s': database error: %w", task.ID, err)
 	}
 
+	models.RunHooks(database, models.HookEventOnClose, task)
+
 	if IsJSONOutput() {
 		OutputJSON(map[string]interface{}{"success": true, "task": task, "forced": closeForce && gateCheckErr != nil})
 	} else if IsCompactOutput() {

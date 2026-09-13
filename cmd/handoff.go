@@ -54,6 +54,9 @@ func runHandoff(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	taskID := task.ID
+	if task.IsClosed() {
+		return fmt.Errorf("cannot hand off task '%s': task is closed (reopen it first with 'gur reopen %s')", taskID, taskID)
+	}
 
 	// Validate JSON if provided
 	if handoffContext != "" {

@@ -46,6 +46,21 @@ func runResume(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	if IsCompactOutput() {
+		agent := ""
+		if chk.AgentID != "" {
+			agent = " | " + chk.AgentID
+		}
+		fmt.Printf("%s | %s | %s%s\n", chk.ID, chk.TaskID, chk.CreatedAt.Format(models.DateTimeShortFormat), agent)
+		if chk.StateText != "" {
+			fmt.Printf("state:%s\n", chk.StateText)
+		}
+		if chk.StateJSON != "" {
+			fmt.Printf("data:%s\n", chk.StateJSON)
+		}
+		return nil
+	}
+
 	fmt.Printf("ID:      %s\n", chk.ID)
 	fmt.Printf("Task:    %s\n", chk.TaskID)
 	if chk.AgentID != "" {

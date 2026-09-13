@@ -33,7 +33,7 @@ func init() {
 	exportCmd.Flags().StringVar(&exportFile, "output", "", "Output file (default stdout)")
 }
 
-func runExport(cmd *cobra.Command, args []string) error {
+func runExport(cmd *cobra.Command, args []string) (err error) {
 	query := db.GetDB().Order("priority ASC, created_at DESC")
 
 	if exportStatus != "" {
@@ -47,11 +47,16 @@ func runExport(cmd *cobra.Command, args []string) error {
 
 	var w io.Writer = os.Stdout
 	if exportFile != "" {
-		f, err := os.Create(exportFile)
-		if err != nil {
-			return fmt.Errorf("failed to create output file: %w", err)
+		f, createErr := os.Create(exportFile)
+		if createErr != nil {
+			return fmt.Errorf("failed to create output file: %w", createErr)
 		}
-		defer f.Close()
+		// A failed close can mean buffered data never reached disk
+		defer func() {
+			if closeErr := f.Close(); closeErr != nil && err == nil {
+				err = fmt.Errorf("failed to write output file: %w", closeErr)
+			}
+		}()
 		w = f
 	}
 
@@ -84,7 +89,6 @@ func ExportJSON(w io.Writer, tasks []models.Task) error {
 // ExportCSV writes tasks as CSV rows to the given writer.
 func ExportCSV(w io.Writer, tasks []models.Task) error {
 	cw := csv.NewWriter(w)
-	defer cw.Flush()
 
 	header := []string{"ID", "Title", "Status", "Priority", "Type", "Assignee", "Labels", "CreatedAt"}
 	if err := cw.Write(header); err != nil {
@@ -106,6 +110,11 @@ func ExportCSV(w io.Writer, tasks []models.Task) error {
 		if err := cw.Write(row); err != nil {
 			return fmt.Errorf("failed to write CSV row: %w", err)
 		}
+	}
+	// csv.Writer buffers; write errors only surface after Flush
+	cw.Flush()
+	if err := cw.Error(); err != nil {
+		return fmt.Errorf("failed to write CSV: %w", err)
 	}
 	return nil
 }

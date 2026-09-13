@@ -53,13 +53,13 @@ func runReceive(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no pending handoff found for task '%s' to agent '%s'", taskID, receiveAgent)
 	}
 
-	now := time.Now()
 	if receiveReject {
 		h.Status = models.HandoffRejected
 	} else {
+		now := time.Now()
 		h.Status = models.HandoffAccepted
+		h.AcceptedAt = &now
 	}
-	h.AcceptedAt = &now
 
 	if err := db.GetDB().Save(&h).Error; err != nil {
 		return fmt.Errorf("failed to update handoff: %w", err)

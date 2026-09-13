@@ -57,6 +57,7 @@ func init() {
 	updateCmd.Flags().Int64Var(&updateTokensUsed, "tokens-used", -1, "Set token usage count")
 	updateCmd.Flags().Int64Var(&updateTokensAdd, "tokens-add", 0, "Add to token usage count")
 	updateCmd.Flags().Int64Var(&updateTokensBudget, "tokens-budget", -1, "Set token budget")
+	updateCmd.MarkFlagsMutuallyExclusive("tokens-used", "tokens-add")
 }
 
 func runUpdate(cmd *cobra.Command, args []string) error {
@@ -68,6 +69,17 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 	// Prevent modifying closed tasks (except reopening via 'reopen' command)
 	if task.IsClosed() && cmd.Flags().Changed("status") && updateStatus != models.StatusClosed {
 		return fmt.Errorf("cannot change status of closed task '%s': use 'gur reopen %s' first", task.ID, task.ID)
+	}
+
+	// Validate token flags before any changes are recorded
+	if cmd.Flags().Changed("tokens-used") && updateTokensUsed < 0 {
+		return fmt.Errorf("invalid --tokens-used %d: must be zero or greater", updateTokensUsed)
+	}
+	if cmd.Flags().Changed("tokens-budget") && updateTokensBudget < 0 {
+		return fmt.Errorf("invalid --tokens-budget %d: must be zero or greater", updateTokensBudget)
+	}
+	if cmd.Flags().Changed("tokens-add") && task.TokensUsed+updateTokensAdd < 0 {
+		return fmt.Errorf("invalid --tokens-add %d: token usage cannot go below zero (currently %d)", updateTokensAdd, task.TokensUsed)
 	}
 
 	// Track changes for audit trail
@@ -249,6 +261,8 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 	if err := database.Save(&task).Error; err != nil {
 		return fmt.Errorf("failed to update task '%s': database error: %w", task.ID, err)
 	}
+
+	models.RunHooks(database, models.HookEventOnUpdate, task)
 
 	if IsJSONOutput() {
 		OutputJSON(map[string]interface{}{"success": true, "task": task})

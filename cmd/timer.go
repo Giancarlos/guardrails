@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -25,8 +26,9 @@ var timerStartCmd = &cobra.Command{
 }
 
 var timerStopCmd = &cobra.Command{
-	Use:   "stop",
-	Short: "Stop the active timer",
+	Use:   "stop [task-id]",
+	Short: "Stop the active timer (specify the task if several are running)",
+	Args:  cobra.MaximumNArgs(1),
 	RunE:  runTimerStop,
 }
 
@@ -39,7 +41,7 @@ var timerLogCmd = &cobra.Command{
 
 var timerStatusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Show active timer",
+	Short: "Show active timers",
 	RunE:  runTimerStatus,
 }
 
@@ -100,10 +102,30 @@ func runTimerStart(cmd *cobra.Command, args []string) error {
 }
 
 func runTimerStop(cmd *cobra.Command, args []string) error {
-	var entry models.TimeEntry
-	if err := db.GetDB().Where("stopped_at IS NULL").First(&entry).Error; err != nil {
+	query := db.GetDB().Where("stopped_at IS NULL").Order("started_at DESC")
+	if len(args) == 1 {
+		task, err := resolveTaskID(args[0])
+		if err != nil {
+			return err
+		}
+		query = query.Where("task_id = ?", task.ID)
+	}
+
+	var active []models.TimeEntry
+	if err := query.Find(&active).Error; err != nil {
+		return fmt.Errorf("failed to find active timers: %w", err)
+	}
+	if len(active) == 0 {
 		return fmt.Errorf("no active timer found")
 	}
+	if len(active) > 1 {
+		ids := make([]string, len(active))
+		for i, e := range active {
+			ids[i] = e.TaskID
+		}
+		return fmt.Errorf("multiple active timers (%s): specify which task to stop, e.g. 'gur timer stop %s'", strings.Join(ids, ", "), ids[0])
+	}
+	entry := active[0]
 
 	now := time.Now()
 	duration := int64(now.Sub(entry.StartedAt).Seconds())
@@ -133,6 +155,9 @@ func runTimerStop(cmd *cobra.Command, args []string) error {
 // durationPattern matches durations like "2h", "30m", "1h30m"
 var durationPattern = regexp.MustCompile(`^(?:(\d+)h)?(?:(\d+)m)?$`)
 
+// maxLoggedHours caps a single time entry to prevent overflow and obvious typos
+const maxLoggedHours = 10000
+
 // ParseDuration parses a duration string like "2h", "30m", "1h30m" into seconds
 func ParseDuration(s string) (int64, error) {
 	matches := durationPattern.FindStringSubmatch(s)
@@ -140,14 +165,26 @@ func ParseDuration(s string) (int64, error) {
 		return 0, fmt.Errorf("invalid duration format '%s' (use e.g. 2h, 30m, 1h30m)", s)
 	}
 
-	var total int64
+	tooLong := fmt.Errorf("invalid duration '%s': must be at most %dh", s, maxLoggedHours)
+	var hours, minutes int64
+	var err error
 	if matches[1] != "" {
-		h, _ := strconv.ParseInt(matches[1], 10, 64)
-		total += h * 3600
+		if hours, err = strconv.ParseInt(matches[1], 10, 64); err != nil || hours > maxLoggedHours {
+			return 0, tooLong
+		}
 	}
 	if matches[2] != "" {
-		m, _ := strconv.ParseInt(matches[2], 10, 64)
-		total += m * 60
+		if minutes, err = strconv.ParseInt(matches[2], 10, 64); err != nil || minutes > maxLoggedHours*60 {
+			return 0, tooLong
+		}
+	}
+
+	total := hours*3600 + minutes*60
+	if total == 0 {
+		return 0, fmt.Errorf("invalid duration '%s': must be greater than zero", s)
+	}
+	if total > maxLoggedHours*3600 {
+		return 0, tooLong
 	}
 	return total, nil
 }
@@ -195,8 +232,11 @@ func runTimerLog(cmd *cobra.Command, args []string) error {
 }
 
 func runTimerStatus(cmd *cobra.Command, args []string) error {
-	var entry models.TimeEntry
-	if err := db.GetDB().Where("stopped_at IS NULL").First(&entry).Error; err != nil {
+	var active []models.TimeEntry
+	if err := db.GetDB().Where("stopped_at IS NULL").Order("started_at DESC").Find(&active).Error; err != nil {
+		return fmt.Errorf("failed to find active timers: %w", err)
+	}
+	if len(active) == 0 {
 		if IsJSONOutput() {
 			OutputJSON(map[string]interface{}{"active": false})
 			return nil
@@ -205,24 +245,34 @@ func runTimerStatus(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	elapsed := int64(time.Since(entry.StartedAt).Seconds())
-
 	if IsJSONOutput() {
-		OutputJSON(map[string]interface{}{
-			"active":     true,
-			"id":         entry.ID,
-			"task_id":    entry.TaskID,
-			"started_at": entry.StartedAt,
-			"elapsed":    elapsed,
-			"formatted":  models.FormatDuration(elapsed),
-		})
+		timers := make([]map[string]interface{}, len(active))
+		for i, entry := range active {
+			elapsed := int64(time.Since(entry.StartedAt).Seconds())
+			timers[i] = map[string]interface{}{
+				"id":         entry.ID,
+				"task_id":    entry.TaskID,
+				"started_at": entry.StartedAt,
+				"elapsed":    elapsed,
+				"formatted":  models.FormatDuration(elapsed),
+			}
+		}
+		// Top-level fields describe the most recent timer for backward compatibility
+		out := map[string]interface{}{"active": true, "count": len(active), "timers": timers}
+		for k, v := range timers[0] {
+			out[k] = v
+		}
+		OutputJSON(out)
 		return nil
 	}
 
-	fmt.Printf("Active timer for task %s: %s (started %s)\n",
-		entry.TaskID,
-		models.FormatDuration(elapsed),
-		entry.StartedAt.Format("15:04:05"))
+	for _, entry := range active {
+		elapsed := int64(time.Since(entry.StartedAt).Seconds())
+		fmt.Printf("Active timer for task %s: %s (started %s)\n",
+			entry.TaskID,
+			models.FormatDuration(elapsed),
+			entry.StartedAt.Format("15:04:05"))
+	}
 	return nil
 }
 
@@ -240,7 +290,11 @@ func runTimerReport(cmd *cobra.Command, args []string) error {
 		Order("total DESC")
 
 	if timerReportTaskID != "" {
-		query = query.Where("task_id = ?", timerReportTaskID)
+		task, err := resolveTaskID(timerReportTaskID)
+		if err != nil {
+			return err
+		}
+		query = query.Where("task_id = ?", task.ID)
 	}
 
 	var rows []reportRow

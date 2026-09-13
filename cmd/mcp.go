@@ -764,6 +764,8 @@ func toolTaskCreate(args map[string]interface{}) (ToolResult, error) {
 		return ToolResult{}, err
 	}
 
+	models.RunHooks(database, models.HookEventOnCreate, task)
+
 	return jsonResult(map[string]interface{}{"success": true, "task": task})
 }
 
@@ -814,6 +816,8 @@ func toolTaskUpdate(args map[string]interface{}) (ToolResult, error) {
 	if err := database.Save(&task).Error; err != nil {
 		return ToolResult{}, err
 	}
+
+	models.RunHooks(database, models.HookEventOnUpdate, task)
 
 	return jsonResult(map[string]interface{}{"success": true, "task": task})
 }
@@ -874,6 +878,8 @@ func toolTaskClose(args map[string]interface{}) (ToolResult, error) {
 	if err := database.Save(&task).Error; err != nil {
 		return ToolResult{}, err
 	}
+
+	models.RunHooks(database, models.HookEventOnClose, task)
 
 	return jsonResult(map[string]interface{}{"success": true, "task": task})
 }

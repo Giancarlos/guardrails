@@ -1,6 +1,9 @@
 package cmd
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Giancarlos/guardrails/internal/db"
@@ -117,5 +120,34 @@ func TestHookEventValidation(t *testing.T) {
 		if models.IsValidHookEvent(event) {
 			t.Errorf("IsValidHookEvent(%q) = true, want false", event)
 		}
+	}
+}
+
+func TestRunHooksExecutesBeforeReturning(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+
+	database := db.GetDB()
+	outFile := filepath.Join(t.TempDir(), "hook.out")
+
+	// Task data must arrive via env vars; a title with shell metacharacters must not be executed
+	hook := &models.Hook{Event: models.HookEventOnClose, Command: `printf '%s|%s|%s' "$GUR_TASK_ID" "$GUR_EVENT" "$GUR_TASK_TITLE" > "` + outFile + `"`, Enabled: true}
+	other := &models.Hook{Event: models.HookEventOnCreate, Command: `echo wrong-event >> "` + outFile + `"`, Enabled: true}
+	database.Create(hook)
+	database.Create(other)
+
+	task := &models.Task{ID: "gur-hookrun1", Title: "x; touch pwned", Status: models.StatusClosed}
+	models.RunHooks(database, models.HookEventOnClose, task)
+
+	// RunHooks is synchronous, so the output must exist as soon as it returns
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("hook did not run before RunHooks returned: %v", err)
+	}
+	if got, want := string(data), "gur-hookrun1|on-close|x; touch pwned"; got != want {
+		t.Errorf("hook output = %q, want %q", got, want)
+	}
+	if strings.Contains(string(data), "wrong-event") {
+		t.Error("hook for a different event should not run")
 	}
 }

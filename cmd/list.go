@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -14,6 +15,7 @@ var (
 	listPriority int
 	listType     string
 	listAssignee string
+	listLabel    string
 	listArchived bool
 	listLimit    int
 	listOffset   int
@@ -34,6 +36,7 @@ func init() {
 	listCmd.Flags().IntVar(&listPriority, "priority", -1, "Filter by priority")
 	listCmd.Flags().StringVar(&listType, "type", "", "Filter by type")
 	listCmd.Flags().StringVar(&listAssignee, "assignee", "", "Filter by assignee")
+	listCmd.Flags().StringVar(&listLabel, "label", "", "Filter by label")
 	listCmd.Flags().BoolVar(&listArchived, "archived", false, "Include archived tasks")
 	listCmd.Flags().IntVar(&listLimit, "limit", 0, "Limit number of results (0 = no limit)")
 	listCmd.Flags().IntVar(&listOffset, "offset", 0, "Skip first N results")
@@ -42,6 +45,12 @@ func init() {
 }
 
 func runList(cmd *cobra.Command, args []string) error {
+	switch listSort {
+	case "", "tokens":
+	default:
+		return fmt.Errorf("invalid --sort '%s': must be 'tokens'", listSort)
+	}
+
 	// Apply saved filter if specified (filter values act as defaults; explicit flags override)
 	if listFilter != "" {
 		sf, err := LoadSavedFilter(listFilter)
@@ -59,6 +68,9 @@ func runList(cmd *cobra.Command, args []string) error {
 		}
 		if sf.Assignee != "" && !cmd.Flags().Changed("assignee") {
 			listAssignee = sf.Assignee
+		}
+		if sf.Label != "" && !cmd.Flags().Changed("label") {
+			listLabel = sf.Label
 		}
 	}
 
@@ -85,6 +97,11 @@ func runList(cmd *cobra.Command, args []string) error {
 	}
 	if listAssignee != "" {
 		query = query.Where("assignee = ?", listAssignee)
+	}
+	if listLabel != "" {
+		// Labels are stored as a JSON array; match the quoted element exactly
+		needle, _ := json.Marshal(listLabel)
+		query = query.Where(`labels LIKE ? ESCAPE '\'`, "%"+escapeLikePattern(string(needle))+"%")
 	}
 
 	if listOffset > 0 {

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -211,5 +212,68 @@ func TestTimerReport(t *testing.T) {
 	}
 	if rows[1].EntryCnt != 1 {
 		t.Errorf("Second row entry count = %d, want 1", rows[1].EntryCnt)
+	}
+}
+
+func TestParseDurationLimits(t *testing.T) {
+	valid := map[string]int64{
+		"2h":     7200,
+		"30m":    1800,
+		"1h30m":  5400,
+		"10000h": 36000000,
+	}
+	for input, want := range valid {
+		got, err := ParseDuration(input)
+		if err != nil {
+			t.Errorf("ParseDuration(%q) error: %v", input, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("ParseDuration(%q) = %d, want %d", input, got, want)
+		}
+	}
+
+	invalid := []string{"", "0m", "0h0m", "abc", "1d", "10001h", "600001m", "99999999999999999999h", "3000000000000000h"}
+	for _, input := range invalid {
+		if got, err := ParseDuration(input); err == nil {
+			t.Errorf("ParseDuration(%q) = %d, want error", input, got)
+		}
+	}
+}
+
+func TestTimerStopMultipleActive(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+
+	database := db.GetDB()
+	database.Create(&models.Task{ID: "gur-stopaaaa", Title: "A", Status: models.StatusOpen})
+	database.Create(&models.Task{ID: "gur-stopbbbb", Title: "B", Status: models.StatusOpen})
+
+	if err := runTimerStart(timerStartCmd, []string{"gur-stopaaaa"}); err != nil {
+		t.Fatalf("start A: %v", err)
+	}
+	if err := runTimerStart(timerStartCmd, []string{"gur-stopbbbb"}); err != nil {
+		t.Fatalf("start B: %v", err)
+	}
+
+	// Without a task ID, stopping is ambiguous and must not pick one arbitrarily
+	err := runTimerStop(timerStopCmd, nil)
+	if err == nil || !strings.Contains(err.Error(), "multiple active timers") {
+		t.Fatalf("stop without task = %v, want multiple active timers error", err)
+	}
+
+	// Stopping a specific task (by prefix) stops only that timer
+	if err := runTimerStop(timerStopCmd, []string{"gur-stopa"}); err != nil {
+		t.Fatalf("stop A: %v", err)
+	}
+	var stillActive []models.TimeEntry
+	database.Where("stopped_at IS NULL").Find(&stillActive)
+	if len(stillActive) != 1 || stillActive[0].TaskID != "gur-stopbbbb" {
+		t.Fatalf("active timers after stopping A = %+v, want only gur-stopbbbb", stillActive)
+	}
+
+	// With one timer left, stop needs no argument
+	if err := runTimerStop(timerStopCmd, nil); err != nil {
+		t.Fatalf("stop remaining: %v", err)
 	}
 }

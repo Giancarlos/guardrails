@@ -38,13 +38,17 @@ func runHandoffHistory(cmd *cobra.Command, args []string) error {
 	}
 	taskID := task.ID
 
+	// Fetch the most recent handoffs, then display them oldest-first
 	var handoffs []models.Handoff
 	err = db.GetDB().Where("task_id = ?", taskID).
-		Order("created_at ASC").
+		Order("created_at DESC").
 		Limit(handoffHistoryLimit).
 		Find(&handoffs).Error
 	if err != nil {
 		return fmt.Errorf("failed to query handoffs: %w", err)
+	}
+	for i, j := 0, len(handoffs)-1; i < j; i, j = i+1, j-1 {
+		handoffs[i], handoffs[j] = handoffs[j], handoffs[i]
 	}
 
 	if IsJSONOutput() {

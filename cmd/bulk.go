@@ -2,9 +2,11 @@ package cmd
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"gorm.io/gorm"
 
 	"github.com/Giancarlos/guardrails/internal/db"
 	"github.com/Giancarlos/guardrails/internal/models"
@@ -25,6 +27,7 @@ var bulkCmd = &cobra.Command{
 	Long: `Perform bulk operations on multiple tasks at once.
 
 All subcommands require at least one filter flag to target tasks.
+Archived tasks are excluded unless --status archived is given.
 Use --dry-run to preview changes before applying.
 
 Examples:
@@ -47,6 +50,8 @@ var bulkUpdateCmd = &cobra.Command{
 	Long: `Update multiple tasks matching the filter criteria.
 
 At least one --set-* flag is required to specify what to change.
+--set-status accepts open or in_progress; use 'gur bulk close' to close tasks
+and 'gur reopen' to reopen them.
 
 Examples:
   gur bulk update --status open --set-status in_progress
@@ -62,7 +67,8 @@ var bulkCloseCmd = &cobra.Command{
 	Short: "Bulk close tasks",
 	Long: `Close multiple tasks matching the filter criteria.
 
-Tasks with gates that have not all passed will be skipped with a warning.
+Tasks that 'gur close' would refuse (open blockers, open subtasks, or gates
+that have not all passed) are skipped with a warning.
 Use --dry-run to preview which tasks would be closed or skipped.
 
 Examples:
@@ -94,7 +100,7 @@ func init() {
 	rootCmd.AddCommand(bulkCmd)
 
 	// Shared filter flags on the parent command (inherited by subcommands)
-	bulkCmd.PersistentFlags().StringVar(&bulkStatus, "status", "", "Filter by status (open, in_progress, closed)")
+	bulkCmd.PersistentFlags().StringVar(&bulkStatus, "status", "", "Filter by status (open, in_progress, closed, archived)")
 	bulkCmd.PersistentFlags().IntVar(&bulkPriority, "priority", -1, "Filter by priority (0-4)")
 	bulkCmd.PersistentFlags().StringVar(&bulkType, "type", "", "Filter by type (task, bug, feature, epic)")
 	bulkCmd.PersistentFlags().StringVar(&bulkAssignee, "assignee", "", "Filter by assignee")
@@ -102,7 +108,7 @@ func init() {
 
 	// bulk update
 	bulkCmd.AddCommand(bulkUpdateCmd)
-	bulkUpdateCmd.Flags().StringVar(&bulkSetStatus, "set-status", "", "Set status on matching tasks")
+	bulkUpdateCmd.Flags().StringVar(&bulkSetStatus, "set-status", "", "Set status on matching tasks (open, in_progress)")
 	bulkUpdateCmd.Flags().IntVar(&bulkSetPriority, "set-priority", -1, "Set priority on matching tasks (0-4)")
 	bulkUpdateCmd.Flags().StringVar(&bulkSetAssignee, "set-assignee", "", "Set assignee on matching tasks")
 
@@ -145,12 +151,40 @@ func queryMatchingTasks() ([]models.Task, error) {
 		return nil, fmt.Errorf("at least one filter flag is required (--status, --priority, --type, --assignee)")
 	}
 
+	// Exclude archived tasks unless explicitly targeted (matches 'gur list')
+	if bulkStatus != models.StatusArchived {
+		query = query.Where("status != ?", models.StatusArchived)
+	}
+
 	var tasks []models.Task
 	if err := query.Find(&tasks).Error; err != nil {
 		return nil, fmt.Errorf("failed to query tasks: %w", err)
 	}
 
 	return tasks, nil
+}
+
+// closeBlockReason mirrors the non-forced blocker and subtask checks in 'gur close'.
+// Returns an empty string if neither prevents closing.
+func closeBlockReason(database *gorm.DB, taskID string) string {
+	var blockerCount int64
+	database.Model(&models.Dependency{}).
+		Joins("JOIN tasks ON tasks.id = dependencies.parent_id").
+		Where("dependencies.child_id = ? AND dependencies.type = ? AND tasks.status != ?",
+			taskID, models.DepTypeBlocks, models.StatusClosed).
+		Count(&blockerCount)
+	if blockerCount > 0 {
+		return fmt.Sprintf("blocked by %d open task(s)", blockerCount)
+	}
+
+	var openSubtasks int64
+	database.Model(&models.Task{}).
+		Where("parent_id = ? AND status != ?", taskID, models.StatusClosed).
+		Count(&openSubtasks)
+	if openSubtasks > 0 {
+		return fmt.Sprintf("%d open subtask(s)", openSubtasks)
+	}
+	return ""
 }
 
 func runBulkUpdate(cmd *cobra.Command, args []string) error {
@@ -160,6 +194,19 @@ func runBulkUpdate(cmd *cobra.Command, args []string) error {
 
 	if !setStatusChanged && !setPriorityChanged && !setAssigneeChanged {
 		return fmt.Errorf("at least one --set-* flag is required (--set-status, --set-priority, --set-assignee)")
+	}
+
+	if setStatusChanged {
+		switch bulkSetStatus {
+		case models.StatusOpen, models.StatusInProgress:
+		case models.StatusClosed:
+			return fmt.Errorf("cannot set status to closed with bulk update: use 'gur bulk close' (it enforces gates, blockers, and subtasks)")
+		default:
+			return fmt.Errorf("invalid --set-status '%s': must be one of: open, in_progress", bulkSetStatus)
+		}
+	}
+	if setPriorityChanged && (bulkSetPriority < 0 || bulkSetPriority > 4) {
+		return fmt.Errorf("invalid --set-priority %d: must be 0 (critical) to 4 (lowest)", bulkSetPriority)
 	}
 
 	tasks, err := queryMatchingTasks()
@@ -174,6 +221,20 @@ func runBulkUpdate(cmd *cobra.Command, args []string) error {
 			fmt.Println("No tasks match the filter criteria.")
 		}
 		return nil
+	}
+
+	// Closed/archived tasks must go through 'gur reopen', which clears close metadata
+	if setStatusChanged {
+		var closedIDs []string
+		for _, t := range tasks {
+			if t.IsClosed() || t.IsArchived() {
+				closedIDs = append(closedIDs, t.ID)
+			}
+		}
+		if len(closedIDs) > 0 {
+			return fmt.Errorf("cannot change status of %d closed/archived task(s) (%s): use 'gur reopen <id>' first",
+				len(closedIDs), strings.Join(closedIDs, ", "))
+		}
 	}
 
 	if bulkDryRun {
@@ -210,7 +271,8 @@ func runBulkUpdate(cmd *cobra.Command, args []string) error {
 	tx := database.Begin()
 	updated := 0
 
-	for _, task := range tasks {
+	for i := range tasks {
+		task := &tasks[i]
 		if setStatusChanged {
 			models.RecordChange(tx, task.ID, "status", task.Status, bulkSetStatus, "user")
 			task.Status = bulkSetStatus
@@ -223,7 +285,7 @@ func runBulkUpdate(cmd *cobra.Command, args []string) error {
 			models.RecordChange(tx, task.ID, "assignee", task.Assignee, bulkSetAssignee, "user")
 			task.Assignee = bulkSetAssignee
 		}
-		if err := tx.Save(&task).Error; err != nil {
+		if err := tx.Save(task).Error; err != nil {
 			tx.Rollback()
 			return fmt.Errorf("failed to update task '%s': %w", task.ID, err)
 		}
@@ -232,6 +294,10 @@ func runBulkUpdate(cmd *cobra.Command, args []string) error {
 
 	if err := tx.Commit().Error; err != nil {
 		return fmt.Errorf("failed to commit bulk update: %w", err)
+	}
+
+	for i := range tasks {
+		models.RunHooks(database, models.HookEventOnUpdate, &tasks[i])
 	}
 
 	if IsJSONOutput() {
@@ -265,7 +331,9 @@ func runBulkClose(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Determine which tasks can be closed (gates check)
+	database := db.GetDB()
+
+	// Determine which tasks can be closed (same checks as 'gur close' without --force)
 	type closeResult struct {
 		task     models.Task
 		canClose bool
@@ -276,6 +344,14 @@ func runBulkClose(cmd *cobra.Command, args []string) error {
 	for _, task := range tasks {
 		if task.IsClosed() {
 			results = append(results, closeResult{task: task, canClose: false, reason: "already closed"})
+			continue
+		}
+		if task.IsArchived() {
+			results = append(results, closeResult{task: task, canClose: false, reason: "archived"})
+			continue
+		}
+		if reason := closeBlockReason(database, task.ID); reason != "" {
+			results = append(results, closeResult{task: task, canClose: false, reason: reason})
 			continue
 		}
 		gateErr := CheckGatesBeforeClose(task.ID)
@@ -325,10 +401,10 @@ func runBulkClose(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	database := db.GetDB()
 	tx := database.Begin()
 	closed := 0
 	skipped := 0
+	var closedTasks []models.Task
 
 	for _, r := range results {
 		if !r.canClose {
@@ -346,11 +422,16 @@ func runBulkClose(cmd *cobra.Command, args []string) error {
 			tx.Rollback()
 			return fmt.Errorf("failed to close task '%s': %w", task.ID, err)
 		}
+		closedTasks = append(closedTasks, task)
 		closed++
 	}
 
 	if err := tx.Commit().Error; err != nil {
 		return fmt.Errorf("failed to commit bulk close: %w", err)
+	}
+
+	for i := range closedTasks {
+		models.RunHooks(database, models.HookEventOnClose, &closedTasks[i])
 	}
 
 	if IsJSONOutput() {
@@ -425,38 +506,52 @@ func runBulkLabel(cmd *cobra.Command, args []string) error {
 
 	database := db.GetDB()
 	tx := database.Begin()
-	updated := 0
+	var updatedTasks []models.Task
 
-	for _, task := range tasks {
-		if bulkLabelAdd != "" {
+	for i := range tasks {
+		task := &tasks[i]
+		changed := false
+		// Record history like 'gur update --label/--remove-label', only for actual changes
+		if bulkLabelAdd != "" && !slices.Contains(task.Labels, bulkLabelAdd) {
+			models.RecordChange(tx, task.ID, "label_added", "", bulkLabelAdd, "user")
 			task.AddLabel(bulkLabelAdd)
+			changed = true
 		}
-		if bulkLabelRemove != "" {
+		if bulkLabelRemove != "" && slices.Contains(task.Labels, bulkLabelRemove) {
+			models.RecordChange(tx, task.ID, "label_removed", bulkLabelRemove, "", "user")
 			task.RemoveLabel(bulkLabelRemove)
+			changed = true
 		}
-		if err := tx.Save(&task).Error; err != nil {
+		if !changed {
+			continue
+		}
+		if err := tx.Save(task).Error; err != nil {
 			tx.Rollback()
 			return fmt.Errorf("failed to update labels for task '%s': %w", task.ID, err)
 		}
-		updated++
+		updatedTasks = append(updatedTasks, *task)
 	}
 
 	if err := tx.Commit().Error; err != nil {
 		return fmt.Errorf("failed to commit bulk label update: %w", err)
 	}
 
+	for i := range updatedTasks {
+		models.RunHooks(database, models.HookEventOnUpdate, &updatedTasks[i])
+	}
+
 	if IsJSONOutput() {
-		var ids []string
-		for _, t := range tasks {
+		ids := []string{}
+		for _, t := range updatedTasks {
 			ids = append(ids, t.ID)
 		}
 		OutputJSON(map[string]interface{}{
 			"success":  true,
-			"updated":  updated,
+			"updated":  len(updatedTasks),
 			"task_ids": ids,
 		})
 	} else {
-		fmt.Printf("Updated %d task(s)\n", updated)
+		fmt.Printf("Updated %d task(s)\n", len(updatedTasks))
 	}
 	return nil
 }

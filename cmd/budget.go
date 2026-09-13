@@ -62,9 +62,10 @@ func runBudget(cmd *cobra.Command, args []string) error {
 
 	var totalUsed, totalBudget int64
 	for _, t := range tasks {
+		// Truncate by characters, not bytes, so multi-byte titles aren't split mid-character
 		title := t.Title
-		if len(title) > 30 {
-			title = title[:27] + "..."
+		if runes := []rune(title); len(runes) > 30 {
+			title = string(runes[:27]) + "..."
 		}
 
 		pct := ""

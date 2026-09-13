@@ -69,7 +69,11 @@ func runCheckpoints(cmd *cobra.Command, args []string) error {
 		if len(state) > 80 {
 			state = state[:77] + "..."
 		}
-		fmt.Printf("[%s] %s%s - %s\n", chk.ID, chk.CreatedAt.Format(models.DateTimeShortFormat), agent, state)
+		if IsCompactOutput() {
+			fmt.Printf("%s %s%s %s\n", chk.ID, chk.CreatedAt.Format(models.DateTimeShortFormat), agent, state)
+		} else {
+			fmt.Printf("[%s] %s%s - %s\n", chk.ID, chk.CreatedAt.Format(models.DateTimeShortFormat), agent, state)
+		}
 	}
 	return nil
 }

@@ -37,6 +37,8 @@ func runReopen(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to reopen task '%s': database error: %w", task.ID, err)
 	}
 
+	models.RunHooks(database, models.HookEventOnReopen, task)
+
 	if IsJSONOutput() {
 		OutputJSON(map[string]interface{}{"success": true, "task": task})
 	} else {
