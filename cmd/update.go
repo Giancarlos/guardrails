@@ -14,19 +14,22 @@ import (
 )
 
 var (
-	updateTitle       string
-	updateDescription string
-	updatePriority    int
-	updateType        string
-	updateStatus      string
-	updateAssignee    string
-	updateNotes       string
-	updateAddLabel    []string
-	updateRemoveLabel []string
-	updateAddSkill    []string
-	updateRemoveSkill []string
-	updateAddAgent    []string
-	updateRemoveAgent []string
+	updateTitle        string
+	updateDescription  string
+	updatePriority     int
+	updateType         string
+	updateStatus       string
+	updateAssignee     string
+	updateNotes        string
+	updateAddLabel     []string
+	updateRemoveLabel  []string
+	updateAddSkill     []string
+	updateRemoveSkill  []string
+	updateAddAgent     []string
+	updateRemoveAgent  []string
+	updateTokensUsed   int64
+	updateTokensAdd    int64
+	updateTokensBudget int64
 )
 
 var updateCmd = &cobra.Command{
@@ -51,6 +54,9 @@ func init() {
 	updateCmd.Flags().StringArrayVar(&updateRemoveSkill, "remove-skill", nil, "Unlink skill from task")
 	updateCmd.Flags().StringArrayVar(&updateAddAgent, "agent", nil, "Link agent to task")
 	updateCmd.Flags().StringArrayVar(&updateRemoveAgent, "remove-agent", nil, "Unlink agent from task")
+	updateCmd.Flags().Int64Var(&updateTokensUsed, "tokens-used", -1, "Set token usage count")
+	updateCmd.Flags().Int64Var(&updateTokensAdd, "tokens-add", 0, "Add to token usage count")
+	updateCmd.Flags().Int64Var(&updateTokensBudget, "tokens-budget", -1, "Set token budget")
 }
 
 func runUpdate(cmd *cobra.Command, args []string) error {
@@ -219,6 +225,25 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 			continue
 		}
 		models.RecordChange(database, task.ID, "agent_removed", agentName, "", changedBy)
+	}
+
+	if cmd.Flags().Changed("tokens-used") {
+		models.RecordChange(database, task.ID, "tokens_used", fmt.Sprintf("%d", task.TokensUsed), fmt.Sprintf("%d", updateTokensUsed), changedBy)
+		task.TokensUsed = updateTokensUsed
+	}
+	if cmd.Flags().Changed("tokens-add") {
+		old := task.TokensUsed
+		task.TokensUsed += updateTokensAdd
+		models.RecordChange(database, task.ID, "tokens_used", fmt.Sprintf("%d", old), fmt.Sprintf("%d", task.TokensUsed), changedBy)
+	}
+	if cmd.Flags().Changed("tokens-budget") {
+		models.RecordChange(database, task.ID, "tokens_budget", fmt.Sprintf("%d", task.TokensBudget), fmt.Sprintf("%d", updateTokensBudget), changedBy)
+		task.TokensBudget = updateTokensBudget
+	}
+
+	// Warn if token usage exceeds budget
+	if task.TokensBudget > 0 && task.TokensUsed > task.TokensBudget {
+		fmt.Fprintf(os.Stderr, "WARNING: Token usage (%d) exceeds budget (%d) for task %s\n", task.TokensUsed, task.TokensBudget, task.ID)
 	}
 
 	if err := database.Save(&task).Error; err != nil {

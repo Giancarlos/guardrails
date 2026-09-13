@@ -17,6 +17,8 @@ var (
 	listArchived bool
 	listLimit    int
 	listOffset   int
+	listSort     string
+	listFilter   string
 )
 
 var listCmd = &cobra.Command{
@@ -35,11 +37,37 @@ func init() {
 	listCmd.Flags().BoolVar(&listArchived, "archived", false, "Include archived tasks")
 	listCmd.Flags().IntVar(&listLimit, "limit", 0, "Limit number of results (0 = no limit)")
 	listCmd.Flags().IntVar(&listOffset, "offset", 0, "Skip first N results")
+	listCmd.Flags().StringVar(&listSort, "sort", "", "Sort order: 'tokens' to sort by token usage descending")
+	listCmd.Flags().StringVar(&listFilter, "filter", "", "Apply a saved filter by name")
 }
 
 func runList(cmd *cobra.Command, args []string) error {
+	// Apply saved filter if specified (filter values act as defaults; explicit flags override)
+	if listFilter != "" {
+		sf, err := LoadSavedFilter(listFilter)
+		if err != nil {
+			return err
+		}
+		if sf.Status != "" && !cmd.Flags().Changed("status") {
+			listStatus = sf.Status
+		}
+		if sf.Priority >= 0 && !cmd.Flags().Changed("priority") {
+			listPriority = sf.Priority
+		}
+		if sf.Type != "" && !cmd.Flags().Changed("type") {
+			listType = sf.Type
+		}
+		if sf.Assignee != "" && !cmd.Flags().Changed("assignee") {
+			listAssignee = sf.Assignee
+		}
+	}
+
 	var tasks []models.Task
-	query := db.GetDB().Order("priority ASC, created_at DESC")
+	orderClause := "priority ASC, created_at DESC"
+	if listSort == "tokens" {
+		orderClause = "tokens_used DESC, priority ASC"
+	}
+	query := db.GetDB().Order(orderClause)
 
 	// Exclude archived by default unless --archived flag or filtering by archived status
 	if !listArchived && listStatus != models.StatusArchived {

@@ -14,6 +14,7 @@ var (
 	tmplType        string
 	tmplDescription string
 	tmplLabels      []string
+	tmplVars        []string
 )
 
 var templateCmd = &cobra.Command{
@@ -62,6 +63,7 @@ func init() {
 	templateCreateCmd.Flags().StringVar(&tmplType, "type", models.TypeTask, "Default type (task, bug, feature, epic)")
 	templateCreateCmd.Flags().StringVar(&tmplDescription, "description", "", "Default description")
 	templateCreateCmd.Flags().StringSliceVar(&tmplLabels, "label", nil, "Default labels")
+	templateCreateCmd.Flags().StringArrayVar(&tmplVars, "var", nil, "Declare template variable names")
 }
 
 func runTemplateCreate(cmd *cobra.Command, args []string) error {
@@ -84,6 +86,7 @@ func runTemplateCreate(cmd *cobra.Command, args []string) error {
 		Priority:    tmplPriority,
 		Type:        tmplType,
 		Labels:      tmplLabels,
+		Variables:   tmplVars,
 	}
 
 	if err := db.GetDB().Create(template).Error; err != nil {
@@ -148,6 +151,9 @@ func runTemplateShow(cmd *cobra.Command, args []string) error {
 	}
 	if len(template.Labels) > 0 {
 		fmt.Printf("Labels:      %v\n", template.Labels)
+	}
+	if len(template.Variables) > 0 {
+		fmt.Printf("Variables:   %v\n", template.Variables)
 	}
 	return nil
 }

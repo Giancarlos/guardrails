@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -20,6 +21,7 @@ var (
 	createParent      string
 	createSkills      []string
 	createAgents      []string
+	createVars        []string
 )
 
 var createCmd = &cobra.Command{
@@ -40,10 +42,22 @@ func init() {
 	createCmd.Flags().StringVar(&createParent, "parent", "", "Parent task ID (creates subtask)")
 	createCmd.Flags().StringArrayVar(&createSkills, "skill", nil, "Link skill to task")
 	createCmd.Flags().StringArrayVar(&createAgents, "agent", nil, "Link agent to task")
+	createCmd.Flags().StringArrayVar(&createVars, "var", nil, "Template variable (key=value)")
+
 }
 
 func runCreate(cmd *cobra.Command, args []string) error {
 	var task *models.Task
+
+	// Parse --var flags into a map
+	varsMap := make(map[string]string)
+	for _, v := range createVars {
+		parts := strings.SplitN(v, "=", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid --var format '%s': must be key=value", v)
+		}
+		varsMap[parts[0]] = parts[1]
+	}
 
 	// If using a template, start with template values
 	if createTemplate != "" {
@@ -51,7 +65,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		if err := db.GetDB().Where("name = ? OR id = ?", createTemplate, createTemplate).First(&template).Error; err != nil {
 			return fmt.Errorf("cannot create task: template '%s' not found (use 'gur template list' to see available templates)", createTemplate)
 		}
-		task = template.ToTask()
+		task = template.ToTask(varsMap)
 	} else {
 		task = &models.Task{
 			Status:   models.StatusOpen,
