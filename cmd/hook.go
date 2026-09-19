@@ -26,7 +26,7 @@ The command receives environment variables:
   GUR_TASK_ID, GUR_TASK_TITLE, GUR_TASK_STATUS, GUR_EVENT
 
 CLI commands wait for hooks to finish (each is killed after 30s), so keep them fast
-or background long work yourself (e.g. 'my-script &'). The MCP server runs hooks
+or background long work yourself (e.g. 'my-script >/dev/null 2>&1 &'). The MCP server runs hooks
 in the background. A failing hook prints a warning but never fails the command.`,
 	Args: cobra.ExactArgs(2),
 	RunE: runHookAdd,
@@ -79,7 +79,7 @@ func init() {
 }
 
 // setHookEnabled toggles a hook. It uses an explicit column update because
-// the Enabled field's default:true tag makes gorm skip a false value on Create/Save.
+// the Enabled field's default:true tag makes gorm replace a false value with true on Create.
 func setHookEnabled(id string, enabled bool) error {
 	result := db.GetDB().Model(&models.Hook{}).Where("id = ?", id).Update("enabled", enabled)
 	if result.Error != nil {
