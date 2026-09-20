@@ -664,12 +664,6 @@ func jsonResult(data interface{}) (ToolResult, error) {
 	}, nil
 }
 
-func textResult(text string) (ToolResult, error) {
-	return ToolResult{
-		Content: []ContentBlock{{Type: "text", Text: text}},
-	}, nil
-}
-
 // Tool implementations
 func toolTaskList(args map[string]interface{}) (ToolResult, error) {
 	database := db.GetDB()
