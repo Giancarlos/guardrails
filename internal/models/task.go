@@ -24,6 +24,7 @@ const (
 const (
 	SourceLocal  = "local"
 	SourceGitHub = "github"
+	SourceBeads  = "beads"
 )
 
 // Task type constants
@@ -79,7 +80,8 @@ type Task struct {
 	Summary     string         `gorm:"type:text" json:"summary,omitempty"`
 	Compacted   bool           `gorm:"default:false" json:"compacted"`
 	Synced      bool           `gorm:"default:false;index" json:"synced"`
-	Source      string         `gorm:"size:20;default:local;index" json:"source"` // local or github
+	Source      string         `gorm:"size:20;default:local;index" json:"source"` // local, github, or beads
+	SourceID    *string        `gorm:"size:64;uniqueIndex" json:"source_id,omitempty"`
 	CreatedAt   time.Time      `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt   time.Time      `gorm:"autoUpdateTime" json:"updated_at"`
 	ClosedAt    *time.Time     `json:"closed_at,omitempty"`
