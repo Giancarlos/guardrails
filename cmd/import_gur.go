@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"gorm.io/gorm"
 
@@ -79,6 +80,58 @@ func validateGurRecords(records []ioformat.GurRecord) error {
 	}
 
 	database := db.GetDB()
+
+	// Two chunked lookups instead of two queries per record: one for the rows
+	// these records would update, one for parents the file doesn't contain.
+	ids := make([]string, 0, len(records))
+	for _, r := range records {
+		ids = append(ids, r.Task.ID)
+	}
+	existingByID, err := loadTasksByID(database, ids)
+	if err != nil {
+		return err
+	}
+
+	var parentIDs []string
+	for _, r := range records {
+		if r.Task.ParentID != "" && !inFile[r.Task.ParentID] {
+			parentIDs = append(parentIDs, r.Task.ParentID)
+		}
+	}
+	knownParents, err := loadTasksByID(database, parentIDs)
+	if err != nil {
+		return err
+	}
+
+	// source_id carries a unique index, so a collision would otherwise surface
+	// as a raw SQLite constraint error halfway through the transaction.
+	var sourceIDs []string
+	inFileBySource := make(map[string]string, len(records))
+	for _, r := range records {
+		sid := derefString(r.Task.SourceID)
+		if sid == "" {
+			continue
+		}
+		if other, dup := inFileBySource[sid]; dup {
+			return fmt.Errorf("record %d (%s): source_id %q is also used by %s in the same file", r.Line, r.Task.ID, sid, other)
+		}
+		inFileBySource[sid] = r.Task.ID
+		sourceIDs = append(sourceIDs, sid)
+	}
+	claimedSources, err := loadTasksBySourceID(database, sourceIDs)
+	if err != nil {
+		return err
+	}
+	for _, r := range records {
+		sid := derefString(r.Task.SourceID)
+		if sid == "" {
+			continue
+		}
+		if owner, taken := claimedSources[sid]; taken && owner != r.Task.ID {
+			return fmt.Errorf("record %d (%s): source_id %q already belongs to task %s", r.Line, r.Task.ID, sid, owner)
+		}
+	}
+
 	for _, r := range records {
 		if r.Has("title") && r.Task.Title == "" {
 			return fmt.Errorf("record %d (%s): title must not be empty", r.Line, r.Task.ID)
@@ -98,28 +151,21 @@ func validateGurRecords(records []ioformat.GurRecord) error {
 
 		// A parent may appear anywhere in the same file, or already exist.
 		if r.Task.ParentID != "" && !inFile[r.Task.ParentID] {
-			var count int64
-			if err := database.Model(&models.Task{}).Where("id = ?", r.Task.ParentID).Count(&count).Error; err != nil {
-				return fmt.Errorf("check parent of %s: %w", r.Task.ID, err)
-			}
-			if count == 0 {
+			if _, ok := knownParents[r.Task.ParentID]; !ok {
 				return fmt.Errorf("record %d (%s): parent %q does not exist", r.Line, r.Task.ID, r.Task.ParentID)
 			}
 		}
 
-		// Closing and reopening run gate checks and hooks, so an import must
-		// not do it as a side effect.
-		var existing models.Task
-		err := database.Where("id = ?", r.Task.ID).First(&existing).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		existing, found := existingByID[r.Task.ID]
+		if !found {
 			if !r.Has("title") || r.Task.Title == "" {
 				return fmt.Errorf("record %d (%s): title is required to create a task", r.Line, r.Task.ID)
 			}
 			continue
 		}
-		if err != nil {
-			return fmt.Errorf("look up %s: %w", r.Task.ID, err)
-		}
+
+		// Closing and reopening run gate checks and hooks, so an import must
+		// not do it as a side effect.
 		if r.Has("status") && r.Task.Status != existing.Status {
 			wasClosed := existing.Status == models.StatusClosed
 			isClosed := r.Task.Status == models.StatusClosed
@@ -133,6 +179,39 @@ func validateGurRecords(records []ioformat.GurRecord) error {
 		}
 	}
 	return nil
+}
+
+// loadTasksBySourceID maps each existing source_id to the task that owns it.
+func loadTasksBySourceID(database *gorm.DB, sourceIDs []string) (map[string]string, error) {
+	out := make(map[string]string, len(sourceIDs))
+	for start := 0; start < len(sourceIDs); start += depQueryChunk {
+		end := min(start+depQueryChunk, len(sourceIDs))
+		var found []models.Task
+		if err := database.Where("source_id IN ?", sourceIDs[start:end]).Find(&found).Error; err != nil {
+			return nil, fmt.Errorf("look up source ids: %w", err)
+		}
+		for _, t := range found {
+			out[derefString(t.SourceID)] = t.ID
+		}
+	}
+	return out, nil
+}
+
+// loadTasksByID fetches the given ids in chunks, mirroring the export side's
+// limit on SQLite bind variables.
+func loadTasksByID(database *gorm.DB, ids []string) (map[string]models.Task, error) {
+	out := make(map[string]models.Task, len(ids))
+	for start := 0; start < len(ids); start += depQueryChunk {
+		end := min(start+depQueryChunk, len(ids))
+		var found []models.Task
+		if err := database.Where("id IN ?", ids[start:end]).Find(&found).Error; err != nil {
+			return nil, fmt.Errorf("look up tasks: %w", err)
+		}
+		for _, t := range found {
+			out[t.ID] = t
+		}
+	}
+	return out, nil
 }
 
 // gurImportColumns maps a record's JSON field to its database column. Only
@@ -252,7 +331,7 @@ func updateGurTask(tx *gorm.DB, existing *models.Task, r ioformat.GurRecord) (bo
 		case "context_summary":
 			oldVal, newVal, value = existing.ContextSummary, incoming.ContextSummary, incoming.ContextSummary
 		case "closed_at":
-			oldVal, newVal, value = fmt.Sprint(existing.ClosedAt), fmt.Sprint(incoming.ClosedAt), incoming.ClosedAt
+			oldVal, newVal, value = formatTimePtr(existing.ClosedAt), formatTimePtr(incoming.ClosedAt), incoming.ClosedAt
 		}
 		if oldVal == newVal {
 			continue
@@ -266,10 +345,12 @@ func updateGurTask(tx *gorm.DB, existing *models.Task, r ioformat.GurRecord) (bo
 	if len(updates) == 0 {
 		return false, nil
 	}
-	// UpdateColumns so an imported updated_at isn't clobbered by autoUpdateTime;
-	// carry the file's value when it has one.
+	// UpdateColumns skips autoUpdateTime, so updated_at is set explicitly:
+	// the file's value when it carries one, otherwise now (the row did change).
 	if r.Has("updated_at") {
 		updates["updated_at"] = incoming.UpdatedAt
+	} else {
+		updates["updated_at"] = time.Now()
 	}
 	if err := tx.Model(&models.Task{}).Where("id = ?", existing.ID).UpdateColumns(updates).Error; err != nil {
 		return false, fmt.Errorf("update %s: %w", existing.ID, err)
@@ -323,6 +404,13 @@ func importGurDeps(tx *gorm.DB, records []ioformat.GurRecord, skippedDeps *[]str
 		}
 	}
 	return nil
+}
+
+func formatTimePtr(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.Format(time.RFC3339)
 }
 
 func derefString(s *string) string {

@@ -68,13 +68,16 @@ func runExport(cmd *cobra.Command, args []string) error {
 	// order-insensitive, so one deterministic order serves every format.
 	q := database.Model(&models.Task{}).Order("priority ASC, created_at DESC")
 	if exportStatus != "" {
+		// An explicit --status is the whole selection: applying the implicit
+		// archived/closed exclusions on top would silently return nothing.
 		q = q.Where("status = ?", exportStatus)
-	}
-	if !exportIncludeAll {
-		q = q.Where("status != ?", models.StatusArchived)
-	}
-	if !exportIncludeClosed {
-		q = q.Where("status NOT IN ?", []string{models.StatusClosed, models.StatusArchived})
+	} else {
+		if !exportIncludeAll {
+			q = q.Where("status != ?", models.StatusArchived)
+		}
+		if !exportIncludeClosed {
+			q = q.Where("status NOT IN ?", []string{models.StatusClosed, models.StatusArchived})
+		}
 	}
 	var tasks []models.Task
 	if err := q.Find(&tasks).Error; err != nil {

@@ -160,3 +160,42 @@ func TestExportStatusFilter(t *testing.T) {
 		t.Error("expected error for invalid --status")
 	}
 }
+
+// An explicit --status must win over the implicit archived/closed exclusions,
+// which would otherwise make '--status archived' return nothing.
+func TestExportStatusOverridesImplicitFilters(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+	database := db.GetDB()
+
+	database.Create(&models.Task{ID: "gur-0e500003", Title: "archived one", Status: models.StatusArchived, Type: models.TypeTask})
+	database.Create(&models.Task{ID: "gur-0e500004", Title: "closed one", Status: models.StatusClosed, Type: models.TypeTask})
+
+	prevFormat, prevOutput, prevStatus := exportFormat, exportOutput, exportStatus
+	prevAll, prevClosed := exportIncludeAll, exportIncludeClosed
+	t.Cleanup(func() {
+		exportFormat, exportOutput, exportStatus = prevFormat, prevOutput, prevStatus
+		exportIncludeAll, exportIncludeClosed = prevAll, prevClosed
+	})
+
+	for _, tc := range []struct{ status, wantID string }{
+		{models.StatusArchived, "gur-0e500003"},
+		{models.StatusClosed, "gur-0e500004"},
+	} {
+		path := filepath.Join(t.TempDir(), "out.json")
+		exportFormat, exportOutput, exportStatus = "json", path, tc.status
+		exportIncludeAll, exportIncludeClosed = false, false
+
+		if err := runExport(exportCmd, nil); err != nil {
+			t.Fatalf("export --status %s: %v", tc.status, err)
+		}
+		data, _ := os.ReadFile(path)
+		var tasks []models.Task
+		if err := json.Unmarshal(data, &tasks); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(tasks) != 1 || tasks[0].ID != tc.wantID {
+			t.Errorf("--status %s exported %d task(s) %v, want %s", tc.status, len(tasks), tasks, tc.wantID)
+		}
+	}
+}
