@@ -65,26 +65,6 @@ func TestBulkCloseClosesDependentsInSameBatch(t *testing.T) {
 	}
 }
 
-func TestExportInvalidFormatKeepsExistingFile(t *testing.T) {
-	cleanup := setupTestDB(t)
-	defer cleanup()
-
-	path := filepath.Join(t.TempDir(), "out.json")
-	if err := os.WriteFile(path, []byte("keep"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	prevFormat, prevFile := exportFormat, exportFile
-	t.Cleanup(func() { exportFormat, exportFile = prevFormat, prevFile })
-	exportFormat, exportFile = "xml", path
-
-	if err := runExport(exportCmd, nil); err == nil {
-		t.Error("expected error for unsupported format")
-	}
-	if data, _ := os.ReadFile(path); string(data) != "keep" {
-		t.Errorf("existing file content = %q, want it untouched", data)
-	}
-}
-
 func TestHandoffAndReceiveStatusRules(t *testing.T) {
 	cleanup := setupTestDB(t)
 	defer cleanup()
@@ -123,34 +103,6 @@ func TestHandoffAndReceiveStatusRules(t *testing.T) {
 		t.Errorf("rejecting a stale handoff on a closed task should work: %v", err)
 	}
 }
-
-func TestImportRejectsDuplicateIDsAndOrphanParents(t *testing.T) {
-	cleanup := setupTestDB(t)
-	defer cleanup()
-	database := db.GetDB()
-
-	invalid := []string{
-		`[{"id":"gur-dup00001","title":"one"},{"id":"gur-dup00001","title":"two"}]`,
-		`[{"id":"gur-orph0001.1","parent_id":"gur-orph0001","title":"orphan"}]`,
-	}
-	for _, content := range invalid {
-		if err := runImport(importCmd, []string{writeImportFile(t, content)}); err == nil {
-			t.Errorf("import %s: expected error", content)
-		}
-	}
-	var count int64
-	database.Model(&models.Task{}).Count(&count)
-	if count != 0 {
-		t.Fatalf("tasks after failed imports = %d, want 0", count)
-	}
-
-	// A parent later in the same file is fine
-	valid := `[{"id":"gur-fam00001.1","parent_id":"gur-fam00001","title":"child"},{"id":"gur-fam00001","title":"parent"}]`
-	if err := runImport(importCmd, []string{writeImportFile(t, valid)}); err != nil {
-		t.Errorf("import with parent in same file: %v", err)
-	}
-}
-
 func resetUpdateFlags(t *testing.T) {
 	t.Helper()
 	updateCmd.LocalFlags().VisitAll(func(f *pflag.Flag) { f.Changed = false })

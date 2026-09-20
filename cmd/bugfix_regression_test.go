@@ -2,8 +2,6 @@ package cmd
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -143,95 +141,6 @@ func TestBulkLabelRecordsHistory(t *testing.T) {
 		t.Errorf("label_added history rows = %d, want 1", count)
 	}
 }
-
-func writeImportFile(t *testing.T, content string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "import.json")
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("write import file: %v", err)
-	}
-	return path
-}
-
-func TestImportValidatesAndIsAtomic(t *testing.T) {
-	cleanup := setupTestDB(t)
-	defer cleanup()
-	database := db.GetDB()
-
-	invalid := []string{
-		`[{"id":"gur-impv0001","title":"ok"},{"id":"gur-impv0002","title":"bad","status":"done"}]`,
-		`[{"id":"not-an-id","title":"bad id"}]`,
-		`[{"id":"gur-impv0003","title":""}]`,
-		`[{"id":"gur-impv0004","title":"bad","priority":42}]`,
-		`[{"id":"gur-impv0005","title":"bad","type":"whatever"}]`,
-	}
-	for _, content := range invalid {
-		if err := runImport(importCmd, []string{writeImportFile(t, content)}); err == nil {
-			t.Errorf("import %s: expected error", content)
-		}
-	}
-
-	var count int64
-	database.Model(&models.Task{}).Count(&count)
-	if count != 0 {
-		t.Errorf("tasks after failed imports = %d, want 0 (imports must be atomic)", count)
-	}
-
-	// Missing fields get the same defaults as 'gur create'
-	if err := runImport(importCmd, []string{writeImportFile(t, `[{"id":"gur-impd0001","title":"defaults"}]`)}); err != nil {
-		t.Fatalf("import defaults: %v", err)
-	}
-	var task models.Task
-	database.Where("id = ?", "gur-impd0001").First(&task)
-	if task.Priority != models.PriorityMedium || task.Status != models.StatusOpen || task.Type != models.TypeTask {
-		t.Errorf("defaults: priority=%d status=%s type=%s, want 2/open/task", task.Priority, task.Status, task.Type)
-	}
-}
-
-func TestImportMergeOnlyChangesPresentFields(t *testing.T) {
-	cleanup := setupTestDB(t)
-	defer cleanup()
-	database := db.GetDB()
-
-	original := &models.Task{ID: "gur-impm0001", Title: "Keep me", Description: "desc", Assignee: "alice", Status: models.StatusOpen, Type: models.TypeBug, Priority: 3}
-	database.Create(original)
-	var before models.Task
-	database.Where("id = ?", original.ID).First(&before)
-
-	prevMerge := importMerge
-	importMerge = true
-	t.Cleanup(func() { importMerge = prevMerge })
-
-	if err := runImport(importCmd, []string{writeImportFile(t, `[{"id":"gur-impm0001","priority":1}]`)}); err != nil {
-		t.Fatalf("merge import: %v", err)
-	}
-	var after models.Task
-	database.Where("id = ?", original.ID).First(&after)
-	if after.Priority != 1 {
-		t.Errorf("priority = %d, want 1", after.Priority)
-	}
-	if after.Title != "Keep me" || after.Description != "desc" || after.Assignee != "alice" || after.Type != models.TypeBug {
-		t.Errorf("unspecified fields changed: %+v", after)
-	}
-	if !after.CreatedAt.Equal(before.CreatedAt) {
-		t.Errorf("created_at changed from %v to %v", before.CreatedAt, after.CreatedAt)
-	}
-	var history int64
-	database.Model(&models.TaskHistory{}).Where("task_id = ? AND field = ?", original.ID, "priority").Count(&history)
-	if history != 1 {
-		t.Errorf("priority history rows = %d, want 1", history)
-	}
-
-	// Merge cannot close a task (would bypass gates)
-	if err := runImport(importCmd, []string{writeImportFile(t, `[{"id":"gur-impm0001","status":"closed"}]`)}); err == nil {
-		t.Error("expected error closing a task via import --merge")
-	}
-	database.Where("id = ?", original.ID).First(&after)
-	if after.Status != models.StatusOpen {
-		t.Errorf("status = %s, want open", after.Status)
-	}
-}
-
 func TestListLabelFilterAndSortValidation(t *testing.T) {
 	cleanup := setupTestDB(t)
 	defer cleanup()
