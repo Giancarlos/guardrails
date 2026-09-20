@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -141,6 +143,119 @@ func TestBulkLabelRecordsHistory(t *testing.T) {
 		t.Errorf("label_added history rows = %d, want 1", count)
 	}
 }
+
+func writeImportFile(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "import.json")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write import file: %v", err)
+	}
+	return path
+}
+
+// withGurImportFormat points the shared import command at gur's own JSON array
+// shape for the duration of a test.
+func withGurImportFormat(t *testing.T) {
+	t.Helper()
+	prevFormat, prevConflict := importFormat, importOnConflict
+	importFormat, importOnConflict = "gur-json", "update"
+	t.Cleanup(func() { importFormat, importOnConflict = prevFormat, prevConflict })
+}
+
+func TestImportValidatesAndIsAtomic(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+	database := db.GetDB()
+	withGurImportFormat(t)
+
+	invalid := []string{
+		`[{"id":"gur-0bad0001","title":"ok"},{"id":"gur-0bad0002","title":"bad","status":"done"}]`,
+		`[{"id":"not-an-id","title":"bad id"}]`,
+		`[{"id":"gur-0bad0003","title":""}]`,
+		`[{"id":"gur-0bad0004","title":"bad","priority":42}]`,
+		`[{"id":"gur-0bad0005","title":"bad","type":"whatever"}]`,
+		`[{"id":"gur-0bad0006","title":"no title field"},{"id":"gur-0bad0007"}]`,
+	}
+	for _, content := range invalid {
+		if err := runImport(importCmd, []string{writeImportFile(t, content)}); err == nil {
+			t.Errorf("import %s: expected error", content)
+		}
+	}
+
+	var count int64
+	database.Model(&models.Task{}).Count(&count)
+	if count != 0 {
+		t.Errorf("tasks after failed imports = %d, want 0 (imports must be atomic)", count)
+	}
+
+	// Missing fields get the same defaults as 'gur create'
+	if err := runImport(importCmd, []string{writeImportFile(t, `[{"id":"gur-0def0001","title":"defaults"}]`)}); err != nil {
+		t.Fatalf("import defaults: %v", err)
+	}
+	var task models.Task
+	database.Where("id = ?", "gur-0def0001").First(&task)
+	if task.Priority != models.PriorityMedium || task.Status != models.StatusOpen || task.Type != models.TypeTask {
+		t.Errorf("defaults: priority=%d status=%s type=%s, want 2/open/task", task.Priority, task.Status, task.Type)
+	}
+}
+
+func TestImportMergeOnlyChangesPresentFields(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+	database := db.GetDB()
+	withGurImportFormat(t)
+
+	original := &models.Task{ID: "gur-0acc0001", Title: "Keep me", Description: "desc", Assignee: "alice", Status: models.StatusOpen, Type: models.TypeBug, Priority: 3}
+	database.Create(original)
+	var before models.Task
+	database.Where("id = ?", original.ID).First(&before)
+
+	if err := runImport(importCmd, []string{writeImportFile(t, `[{"id":"gur-0acc0001","priority":1}]`)}); err != nil {
+		t.Fatalf("update import: %v", err)
+	}
+	var after models.Task
+	database.Where("id = ?", original.ID).First(&after)
+	if after.Priority != 1 {
+		t.Errorf("priority = %d, want 1", after.Priority)
+	}
+	if after.Title != "Keep me" || after.Description != "desc" || after.Assignee != "alice" || after.Type != models.TypeBug {
+		t.Errorf("unspecified fields changed: %+v", after)
+	}
+	if !after.CreatedAt.Equal(before.CreatedAt) {
+		t.Errorf("created_at changed from %v to %v", before.CreatedAt, after.CreatedAt)
+	}
+	var history int64
+	database.Model(&models.TaskHistory{}).Where("task_id = ? AND field = ?", original.ID, "priority").Count(&history)
+	if history != 1 {
+		t.Errorf("priority history rows = %d, want 1", history)
+	}
+
+	// Import cannot close a task (would bypass gates and hooks)
+	if err := runImport(importCmd, []string{writeImportFile(t, `[{"id":"gur-0acc0001","status":"closed"}]`)}); err == nil {
+		t.Error("expected error closing a task via import")
+	}
+	database.Where("id = ?", original.ID).First(&after)
+	if after.Status != models.StatusOpen {
+		t.Errorf("status = %s, want open", after.Status)
+	}
+
+	// --on-conflict=skip leaves the row alone
+	importOnConflict = "skip"
+	if err := runImport(importCmd, []string{writeImportFile(t, `[{"id":"gur-0acc0001","title":"should not land"}]`)}); err != nil {
+		t.Fatalf("skip import: %v", err)
+	}
+	database.Where("id = ?", original.ID).First(&after)
+	if after.Title != "Keep me" {
+		t.Errorf("title = %q, want it unchanged under --on-conflict=skip", after.Title)
+	}
+
+	// --on-conflict=error fails loudly
+	importOnConflict = "error"
+	if err := runImport(importCmd, []string{writeImportFile(t, `[{"id":"gur-0acc0001","title":"nope"}]`)}); err == nil {
+		t.Error("expected error under --on-conflict=error")
+	}
+}
+
 func TestListLabelFilterAndSortValidation(t *testing.T) {
 	cleanup := setupTestDB(t)
 	defer cleanup()

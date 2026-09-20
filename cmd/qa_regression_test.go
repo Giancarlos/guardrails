@@ -103,6 +103,35 @@ func TestHandoffAndReceiveStatusRules(t *testing.T) {
 		t.Errorf("rejecting a stale handoff on a closed task should work: %v", err)
 	}
 }
+
+func TestImportRejectsDuplicateIDsAndOrphanParents(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+	database := db.GetDB()
+	withGurImportFormat(t)
+
+	invalid := []string{
+		`[{"id":"gur-0dd00001","title":"one"},{"id":"gur-0dd00001","title":"two"}]`,
+		`[{"id":"gur-00ab0001.1","parent_id":"gur-00ab0001","title":"orphan"}]`,
+	}
+	for _, content := range invalid {
+		if err := runImport(importCmd, []string{writeImportFile(t, content)}); err == nil {
+			t.Errorf("import %s: expected error", content)
+		}
+	}
+	var count int64
+	database.Model(&models.Task{}).Count(&count)
+	if count != 0 {
+		t.Fatalf("tasks after failed imports = %d, want 0", count)
+	}
+
+	// A parent later in the same file is fine
+	valid := `[{"id":"gur-0fa00001.1","parent_id":"gur-0fa00001","title":"child"},{"id":"gur-0fa00001","title":"parent"}]`
+	if err := runImport(importCmd, []string{writeImportFile(t, valid)}); err != nil {
+		t.Errorf("import with parent in same file: %v", err)
+	}
+}
+
 func resetUpdateFlags(t *testing.T) {
 	t.Helper()
 	updateCmd.LocalFlags().VisitAll(func(f *pflag.Flag) { f.Changed = false })

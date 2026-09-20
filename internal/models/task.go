@@ -64,6 +64,24 @@ func ValidateTaskID(id string) bool {
 	return taskIDPattern.MatchString(id)
 }
 
+// IsValidStatus reports whether s is one of the four task statuses.
+func IsValidStatus(s string) bool {
+	switch s {
+	case StatusOpen, StatusInProgress, StatusClosed, StatusArchived:
+		return true
+	}
+	return false
+}
+
+// IsValidType reports whether t is one of the four task types.
+func IsValidType(t string) bool {
+	switch t {
+	case TypeTask, TypeBug, TypeFeature, TypeEpic:
+		return true
+	}
+	return false
+}
+
 // Task represents a task/issue in the system
 type Task struct {
 	ID             string         `gorm:"primaryKey;size:30" json:"id"`

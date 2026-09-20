@@ -28,10 +28,15 @@ var importCmd = &cobra.Command{
 	Short: "Import tasks from an external format",
 	Long: `Import tasks into guardrails from an external format.
 
-Currently supports beads 1.0.x JSONL (the output of 'bd export').
+Formats:
+  beads-jsonl   beads 1.0.x JSONL (the output of 'bd export'); the default.
+  gur-jsonl     A native 'gur export --format gur-jsonl' file, with dependencies.
+  gur-json      A native 'gur export --format json' array.
 
-Idempotency: tasks are matched on their original bd id (stored in the
-source_id column). Default --on-conflict=update upserts existing rows.
+Idempotency: beads records are matched on their original bd id (stored in the
+source_id column); native records are matched on their gur task id. Default
+--on-conflict=update upserts existing rows. Native imports update only the
+fields the file carries, and refuse to close or reopen a task.
 
 Non-issue records (memories, agents, rigs, roles, messages) are skipped
 with a summary warning at the end.`,
@@ -41,7 +46,7 @@ with a summary warning at the end.`,
 
 func init() {
 	rootCmd.AddCommand(importCmd)
-	importCmd.Flags().StringVar(&importFormat, "format", "beads-jsonl", "Input format (beads-jsonl)")
+	importCmd.Flags().StringVar(&importFormat, "format", "beads-jsonl", "Input format (beads-jsonl, gur-jsonl, gur-json)")
 	importCmd.Flags().BoolVar(&importDryRun, "dry-run", false, "Parse + validate, print summary, no writes")
 	importCmd.Flags().StringVar(&importOnConflict, "on-conflict", "update", "Behavior when source_id already exists: update, skip, error")
 	importCmd.Flags().BoolVar(&importNoComments, "no-comments", false, "Do not fold comments into notes")
@@ -50,13 +55,26 @@ func init() {
 }
 
 func runImport(cmd *cobra.Command, args []string) error {
-	if importFormat != "beads-jsonl" {
-		return fmt.Errorf("unsupported --format %q (only beads-jsonl is supported)", importFormat)
+	switch importFormat {
+	case "beads-jsonl", "gur-jsonl", "gur-json":
+	default:
+		return fmt.Errorf("unsupported --format %q (want beads-jsonl, gur-jsonl, or gur-json)", importFormat)
 	}
 	switch importOnConflict {
 	case "update", "skip", "error":
 	default:
 		return fmt.Errorf("invalid --on-conflict %q (want update, skip, or error)", importOnConflict)
+	}
+
+	if importFormat != "beads-jsonl" {
+		// These shape the bd->gur translation and mean nothing for a restore
+		// of gur's own data; failing is clearer than silently ignoring them.
+		for _, f := range []string{"map-type", "label-prefix", "no-comments"} {
+			if cmd.Flags().Changed(f) {
+				return fmt.Errorf("--%s only applies to --format beads-jsonl", f)
+			}
+		}
+		return runGurImport(args[0])
 	}
 
 	typeOverrides, err := parseTypeMaps(importTypeMaps)
