@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -14,6 +15,7 @@ var (
 	tmplType        string
 	tmplDescription string
 	tmplLabels      []string
+	tmplVars        []string
 )
 
 var templateCmd = &cobra.Command{
@@ -62,6 +64,7 @@ func init() {
 	templateCreateCmd.Flags().StringVar(&tmplType, "type", models.TypeTask, "Default type (task, bug, feature, epic)")
 	templateCreateCmd.Flags().StringVar(&tmplDescription, "description", "", "Default description")
 	templateCreateCmd.Flags().StringSliceVar(&tmplLabels, "label", nil, "Default labels")
+	templateCreateCmd.Flags().StringSliceVar(&tmplVars, "var", nil, "Declare template variable names (repeat or comma-separate)")
 }
 
 func runTemplateCreate(cmd *cobra.Command, args []string) error {
@@ -69,6 +72,12 @@ func runTemplateCreate(cmd *cobra.Command, args []string) error {
 	title := ""
 	if len(args) > 1 {
 		title = args[1]
+	}
+
+	for _, v := range tmplVars {
+		if strings.TrimSpace(v) == "" || strings.ContainsAny(v, "{}= ") {
+			return fmt.Errorf("invalid --var name '%s': must be non-empty with no spaces, braces, or '='", v)
+		}
 	}
 
 	// Check if template already exists
@@ -84,6 +93,7 @@ func runTemplateCreate(cmd *cobra.Command, args []string) error {
 		Priority:    tmplPriority,
 		Type:        tmplType,
 		Labels:      tmplLabels,
+		Variables:   tmplVars,
 	}
 
 	if err := db.GetDB().Create(template).Error; err != nil {
@@ -148,6 +158,9 @@ func runTemplateShow(cmd *cobra.Command, args []string) error {
 	}
 	if len(template.Labels) > 0 {
 		fmt.Printf("Labels:      %v\n", template.Labels)
+	}
+	if len(template.Variables) > 0 {
+		fmt.Printf("Variables:   %v\n", template.Variables)
 	}
 	return nil
 }

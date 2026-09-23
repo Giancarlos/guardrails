@@ -45,14 +45,27 @@ func runShow(cmd *cobra.Command, args []string) error {
 	var agentLinks []models.TaskAgentLink
 	database.Preload("Agent").Where("task_id = ?", task.ID).Find(&agentLinks)
 
+	// Fetch latest checkpoint
+	var latestCheckpoint *models.Checkpoint
+	var chk models.Checkpoint
+	if err := database.Where("task_id = ?", task.ID).Order("created_at DESC").First(&chk).Error; err == nil {
+		latestCheckpoint = &chk
+	}
+
+	// Fetch pending handoffs
+	var pendingHandoffs []models.Handoff
+	database.Where("task_id = ? AND status = ?", task.ID, models.HandoffPending).Order("created_at ASC").Find(&pendingHandoffs)
+
 	if IsJSONOutput() {
 		OutputJSON(map[string]interface{}{
-			"task":       task,
-			"blocked_by": blockedBy,
-			"blocks":     blocks,
-			"subtasks":   subtasks,
-			"skills":     skillLinks,
-			"agents":     agentLinks,
+			"task":              task,
+			"blocked_by":        blockedBy,
+			"blocks":            blocks,
+			"subtasks":          subtasks,
+			"skills":            skillLinks,
+			"agents":            agentLinks,
+			"latest_checkpoint": latestCheckpoint,
+			"pending_handoffs":  pendingHandoffs,
 		})
 		return nil
 	}
@@ -101,6 +114,26 @@ func runShow(cmd *cobra.Command, args []string) error {
 		if task.Notes != "" {
 			fmt.Printf("notes:%s\n", task.Notes)
 		}
+		if task.TokensUsed > 0 || task.TokensBudget > 0 {
+			fmt.Printf("tokens:%s\n", task.TokenUsageString())
+		}
+		if task.ContextSummary != "" {
+			fmt.Printf("context:%s\n", task.ContextSummary)
+		}
+		if latestCheckpoint != nil {
+			state := latestCheckpoint.StateText
+			if state == "" {
+				state = latestCheckpoint.StateJSON
+			}
+			fmt.Printf("checkpoint:%s %s\n", latestCheckpoint.ID, state)
+		}
+		if len(pendingHandoffs) > 0 {
+			parts := make([]string, len(pendingHandoffs))
+			for i, h := range pendingHandoffs {
+				parts[i] = h.ID + ":" + h.FromAgent + "->" + h.ToAgent
+			}
+			fmt.Printf("handoffs:%s\n", strings.Join(parts, " "))
+		}
 		return nil
 	}
 
@@ -125,6 +158,12 @@ func runShow(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Summary:  %s\n", task.Summary)
 	}
 	fmt.Printf("Created:  %s\n", task.CreatedAt.Format(models.DateTimeShortFormat))
+	if task.TokensUsed > 0 || task.TokensBudget > 0 {
+		fmt.Printf("Tokens:   %s\n", task.TokenUsageString())
+	}
+	if task.ContextSummary != "" {
+		fmt.Printf("Context:  %s\n", task.ContextSummary)
+	}
 	if len(subtasks) > 0 {
 		fmt.Println("\nSubtasks:")
 		for _, s := range subtasks {
@@ -168,6 +207,36 @@ func runShow(cmd *cobra.Command, args []string) error {
 				agentNames = append(agentNames, name)
 			}
 			fmt.Printf("  Agents: %s\n", strings.Join(agentNames, ", "))
+		}
+	}
+
+	// Show latest checkpoint
+	if latestCheckpoint != nil {
+		fmt.Println()
+		fmt.Println("Latest Checkpoint:")
+		fmt.Printf("  ID:      %s\n", latestCheckpoint.ID)
+		if latestCheckpoint.AgentID != "" {
+			fmt.Printf("  Agent:   %s\n", latestCheckpoint.AgentID)
+		}
+		fmt.Printf("  Created: %s\n", latestCheckpoint.CreatedAt.Format(models.DateTimeShortFormat))
+		if latestCheckpoint.StateText != "" {
+			fmt.Printf("  State:   %s\n", latestCheckpoint.StateText)
+		}
+		if latestCheckpoint.StateJSON != "" {
+			fmt.Printf("  Data:    %s\n", latestCheckpoint.StateJSON)
+		}
+	}
+
+	// Show pending handoffs
+	if len(pendingHandoffs) > 0 {
+		fmt.Println()
+		fmt.Println("Pending Handoffs:")
+		for _, h := range pendingHandoffs {
+			summary := h.Summary
+			if summary == "" {
+				summary = "(context data only)"
+			}
+			fmt.Printf("  [%s] %s -> %s: %s\n", h.ID, h.FromAgent, h.ToAgent, summary)
 		}
 	}
 

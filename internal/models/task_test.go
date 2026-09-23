@@ -411,3 +411,28 @@ func TestTaskAppendNotes(t *testing.T) {
 		t.Error("AppendNotes() did not append second note")
 	}
 }
+
+func TestTokenUsageString(t *testing.T) {
+	tests := []struct {
+		name         string
+		tokensUsed   int64
+		tokensBudget int64
+		expected     string
+	}{
+		{"no budget zero used", 0, 0, "0"},
+		{"no budget some used", 1500, 0, "1500"},
+		{"with budget zero used", 0, 5000, "0/5000 (0%)"},
+		{"with budget 30 pct used", 1500, 5000, "1500/5000 (30%)"},
+		{"with budget 100 pct used", 5000, 5000, "5000/5000 (100%)"},
+		{"over budget", 7000, 5000, "7000/5000 (140%)"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			task := &Task{TokensUsed: tt.tokensUsed, TokensBudget: tt.tokensBudget}
+			if got := task.TokenUsageString(); got != tt.expected {
+				t.Errorf("TokenUsageString() = %s, want %s", got, tt.expected)
+			}
+		})
+	}
+}

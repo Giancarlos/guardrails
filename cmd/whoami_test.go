@@ -40,6 +40,10 @@ func captureStdout(t *testing.T, fn func()) string {
 func withTempDB(t *testing.T) string {
 	t.Helper()
 	tmpDir := t.TempDir()
+	// Resolve symlinks so the path matches os.Getwd() (macOS /var -> /private/var).
+	if resolved, err := filepath.EvalSymlinks(tmpDir); err == nil {
+		tmpDir = resolved
+	}
 	guardrailsDir := filepath.Join(tmpDir, ".guardrails")
 	if err := os.MkdirAll(guardrailsDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)

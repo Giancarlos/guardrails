@@ -3,6 +3,8 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -20,6 +22,7 @@ var (
 	createParent      string
 	createSkills      []string
 	createAgents      []string
+	createVars        []string
 )
 
 var createCmd = &cobra.Command{
@@ -40,10 +43,25 @@ func init() {
 	createCmd.Flags().StringVar(&createParent, "parent", "", "Parent task ID (creates subtask)")
 	createCmd.Flags().StringArrayVar(&createSkills, "skill", nil, "Link skill to task")
 	createCmd.Flags().StringArrayVar(&createAgents, "agent", nil, "Link agent to task")
+	createCmd.Flags().StringArrayVar(&createVars, "var", nil, "Template variable (key=value)")
+
 }
 
 func runCreate(cmd *cobra.Command, args []string) error {
 	var task *models.Task
+
+	// Parse --var flags into a map
+	varsMap := make(map[string]string)
+	for _, v := range createVars {
+		parts := strings.SplitN(v, "=", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid --var format '%s': must be key=value", v)
+		}
+		varsMap[parts[0]] = parts[1]
+	}
+	if len(varsMap) > 0 && createTemplate == "" {
+		return fmt.Errorf("--var can only be used with --template")
+	}
 
 	// If using a template, start with template values
 	if createTemplate != "" {
@@ -51,7 +69,10 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		if err := db.GetDB().Where("name = ? OR id = ?", createTemplate, createTemplate).First(&template).Error; err != nil {
 			return fmt.Errorf("cannot create task: template '%s' not found (use 'gur template list' to see available templates)", createTemplate)
 		}
-		task = template.ToTask()
+		if err := validateTemplateVars(&template, varsMap); err != nil {
+			return err
+		}
+		task = template.ToTask(varsMap)
 	} else {
 		task = &models.Task{
 			Status:   models.StatusOpen,
@@ -150,12 +171,49 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	models.RunHooks(database, models.HookEventOnCreate, task)
+
 	if IsJSONOutput() {
 		OutputJSON(map[string]interface{}{"success": true, "task": task})
 	} else if IsCompactOutput() {
 		fmt.Printf("ok: %s\n", task.ID)
 	} else {
 		fmt.Printf("Created: %s - %s\n", task.ID, task.Title)
+	}
+	return nil
+}
+
+// validateTemplateVars ensures every declared template variable is provided and no unknown ones are passed.
+// Templates that declare no variables accept any --var values (backward compatible).
+func validateTemplateVars(template *models.Template, vars map[string]string) error {
+	if len(template.Variables) == 0 {
+		return nil
+	}
+	declared := make(map[string]bool, len(template.Variables))
+	for _, name := range template.Variables {
+		declared[name] = true
+	}
+
+	var unknown, missing []string
+	for name := range vars {
+		if !declared[name] {
+			unknown = append(unknown, name)
+		}
+	}
+	for _, name := range template.Variables {
+		if _, ok := vars[name]; !ok {
+			missing = append(missing, name)
+		}
+	}
+	sort.Strings(unknown)
+
+	if len(unknown) > 0 {
+		return fmt.Errorf("cannot create task: unknown variable(s) %s for template '%s' (declared: %s)",
+			strings.Join(unknown, ", "), template.Name, strings.Join(template.Variables, ", "))
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("cannot create task: template '%s' requires --var for: %s",
+			template.Name, strings.Join(missing, ", "))
 	}
 	return nil
 }

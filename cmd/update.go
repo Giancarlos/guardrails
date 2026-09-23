@@ -3,10 +3,12 @@ package cmd
 import (
 	"bufio"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"golang.org/x/term"
 
 	"github.com/Giancarlos/guardrails/internal/db"
@@ -14,19 +16,22 @@ import (
 )
 
 var (
-	updateTitle       string
-	updateDescription string
-	updatePriority    int
-	updateType        string
-	updateStatus      string
-	updateAssignee    string
-	updateNotes       string
-	updateAddLabel    []string
-	updateRemoveLabel []string
-	updateAddSkill    []string
-	updateRemoveSkill []string
-	updateAddAgent    []string
-	updateRemoveAgent []string
+	updateTitle        string
+	updateDescription  string
+	updatePriority     int
+	updateType         string
+	updateStatus       string
+	updateAssignee     string
+	updateNotes        string
+	updateAddLabel     []string
+	updateRemoveLabel  []string
+	updateAddSkill     []string
+	updateRemoveSkill  []string
+	updateAddAgent     []string
+	updateRemoveAgent  []string
+	updateTokensUsed   int64
+	updateTokensAdd    int64
+	updateTokensBudget int64
 )
 
 var updateCmd = &cobra.Command{
@@ -51,6 +56,10 @@ func init() {
 	updateCmd.Flags().StringArrayVar(&updateRemoveSkill, "remove-skill", nil, "Unlink skill from task")
 	updateCmd.Flags().StringArrayVar(&updateAddAgent, "agent", nil, "Link agent to task")
 	updateCmd.Flags().StringArrayVar(&updateRemoveAgent, "remove-agent", nil, "Unlink agent from task")
+	updateCmd.Flags().Int64Var(&updateTokensUsed, "tokens-used", -1, "Set token usage count")
+	updateCmd.Flags().Int64Var(&updateTokensAdd, "tokens-add", 0, "Add to token usage count")
+	updateCmd.Flags().Int64Var(&updateTokensBudget, "tokens-budget", -1, "Set token budget")
+	updateCmd.MarkFlagsMutuallyExclusive("tokens-used", "tokens-add")
 }
 
 func runUpdate(cmd *cobra.Command, args []string) error {
@@ -63,6 +72,31 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 	if task.IsClosed() && cmd.Flags().Changed("status") && updateStatus != models.StatusClosed {
 		return fmt.Errorf("cannot change status of closed task '%s': use 'gur reopen %s' first", task.ID, task.ID)
 	}
+
+	// Validate token flags before any changes are recorded
+	if cmd.Flags().Changed("tokens-used") && updateTokensUsed < 0 {
+		return fmt.Errorf("invalid --tokens-used %d: must be zero or greater", updateTokensUsed)
+	}
+	if cmd.Flags().Changed("tokens-budget") && updateTokensBudget < 0 {
+		return fmt.Errorf("invalid --tokens-budget %d: must be zero or greater", updateTokensBudget)
+	}
+	if cmd.Flags().Changed("tokens-add") {
+		if updateTokensAdd > 0 && task.TokensUsed > math.MaxInt64-updateTokensAdd {
+			return fmt.Errorf("invalid --tokens-add %d: token usage would overflow (currently %d)", updateTokensAdd, task.TokensUsed)
+		}
+		if task.TokensUsed+updateTokensAdd < 0 {
+			return fmt.Errorf("invalid --tokens-add %d: token usage cannot go below zero (currently %d)", updateTokensAdd, task.TokensUsed)
+		}
+	}
+
+	// Only flags defined on 'update' itself count as changes (not --json/--compact)
+	hasChanges := false
+	cmd.LocalFlags().VisitAll(func(f *pflag.Flag) {
+		if f.Changed {
+			hasChanges = true
+		}
+	})
+	tokensChanged := cmd.Flags().Changed("tokens-used") || cmd.Flags().Changed("tokens-add") || cmd.Flags().Changed("tokens-budget")
 
 	// Track changes for audit trail
 	database := db.GetDB()
@@ -221,8 +255,31 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 		models.RecordChange(database, task.ID, "agent_removed", agentName, "", changedBy)
 	}
 
+	if cmd.Flags().Changed("tokens-used") {
+		models.RecordChange(database, task.ID, "tokens_used", fmt.Sprintf("%d", task.TokensUsed), fmt.Sprintf("%d", updateTokensUsed), changedBy)
+		task.TokensUsed = updateTokensUsed
+	}
+	if cmd.Flags().Changed("tokens-add") {
+		old := task.TokensUsed
+		task.TokensUsed += updateTokensAdd
+		models.RecordChange(database, task.ID, "tokens_used", fmt.Sprintf("%d", old), fmt.Sprintf("%d", task.TokensUsed), changedBy)
+	}
+	if cmd.Flags().Changed("tokens-budget") {
+		models.RecordChange(database, task.ID, "tokens_budget", fmt.Sprintf("%d", task.TokensBudget), fmt.Sprintf("%d", updateTokensBudget), changedBy)
+		task.TokensBudget = updateTokensBudget
+	}
+
+	// Warn if a token change leaves usage over budget
+	if tokensChanged && task.TokensBudget > 0 && task.TokensUsed > task.TokensBudget {
+		fmt.Fprintf(os.Stderr, "WARNING: Token usage (%d) exceeds budget (%d) for task %s\n", task.TokensUsed, task.TokensBudget, task.ID)
+	}
+
 	if err := database.Save(&task).Error; err != nil {
 		return fmt.Errorf("failed to update task '%s': database error: %w", task.ID, err)
+	}
+
+	if hasChanges {
+		models.RunHooks(database, models.HookEventOnUpdate, task)
 	}
 
 	if IsJSONOutput() {

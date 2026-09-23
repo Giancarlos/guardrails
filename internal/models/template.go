@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -18,6 +19,7 @@ type Template struct {
 	Priority    int         `json:"priority"`
 	Type        string      `gorm:"size:20;default:task" json:"type"`
 	Labels      StringSlice `gorm:"type:text" json:"labels,omitempty"`
+	Variables   StringSlice `gorm:"type:text" json:"variables,omitempty"`
 	CreatedAt   time.Time   `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt   time.Time   `gorm:"autoUpdateTime" json:"updated_at"`
 }
@@ -40,11 +42,21 @@ func (t *Template) BeforeCreate(tx *gorm.DB) error {
 	return nil
 }
 
-// ToTask creates a new task from this template
-func (t *Template) ToTask() *Task {
+// ToTask creates a new task from this template, substituting {{key}} placeholders
+// with values from the vars map. Missing variables are left as-is.
+func (t *Template) ToTask(vars map[string]string) *Task {
+	title := t.Title
+	description := t.Description
+
+	for k, v := range vars {
+		placeholder := "{{" + k + "}}"
+		title = strings.ReplaceAll(title, placeholder, v)
+		description = strings.ReplaceAll(description, placeholder, v)
+	}
+
 	task := &Task{
-		Title:       t.Title,
-		Description: t.Description,
+		Title:       title,
+		Description: description,
 		Priority:    t.Priority,
 		Type:        t.Type,
 		Labels:      make(StringSlice, len(t.Labels)),

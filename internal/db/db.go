@@ -103,6 +103,10 @@ func runMigrations(database *gorm.DB) error {
 		&models.Agent{},
 		&models.TaskSkillLink{},
 		&models.TaskAgentLink{},
+		&models.Checkpoint{},
+		&models.Handoff{},
+		&models.TimeEntry{},
+		&models.Hook{},
 	)
 	if err != nil {
 		return err

@@ -64,28 +64,49 @@ func ValidateTaskID(id string) bool {
 	return taskIDPattern.MatchString(id)
 }
 
+// IsValidStatus reports whether s is one of the four task statuses.
+func IsValidStatus(s string) bool {
+	switch s {
+	case StatusOpen, StatusInProgress, StatusClosed, StatusArchived:
+		return true
+	}
+	return false
+}
+
+// IsValidType reports whether t is one of the four task types.
+func IsValidType(t string) bool {
+	switch t {
+	case TypeTask, TypeBug, TypeFeature, TypeEpic:
+		return true
+	}
+	return false
+}
+
 // Task represents a task/issue in the system
 type Task struct {
-	ID          string         `gorm:"primaryKey;size:30" json:"id"`
-	ParentID    string         `gorm:"size:30;index" json:"parent_id,omitempty"`
-	Title       string         `gorm:"size:255;not null" json:"title"`
-	Description string         `gorm:"type:text" json:"description,omitempty"`
-	Status      string         `gorm:"size:20;default:open;index;index:idx_status_priority" json:"status"`
-	Priority    int            `gorm:"index;index:idx_status_priority" json:"priority"` // 0=highest, 4=lowest
-	Type        string         `gorm:"size:20;default:task;index" json:"type"`
-	Labels      StringSlice    `gorm:"type:text" json:"labels,omitempty"`
-	Assignee    string         `gorm:"size:100;index" json:"assignee,omitempty"`
-	Notes       string         `gorm:"type:text" json:"notes,omitempty"`
-	CloseReason string         `gorm:"size:255" json:"close_reason,omitempty"`
-	Summary     string         `gorm:"type:text" json:"summary,omitempty"`
-	Compacted   bool           `gorm:"default:false" json:"compacted"`
-	Synced      bool           `gorm:"default:false;index" json:"synced"`
-	Source      string         `gorm:"size:20;default:local;index" json:"source"` // local, github, or beads
-	SourceID    *string        `gorm:"size:64;uniqueIndex" json:"source_id,omitempty"`
-	CreatedAt   time.Time      `gorm:"autoCreateTime" json:"created_at"`
-	UpdatedAt   time.Time      `gorm:"autoUpdateTime" json:"updated_at"`
-	ClosedAt    *time.Time     `json:"closed_at,omitempty"`
-	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
+	ID             string         `gorm:"primaryKey;size:30" json:"id"`
+	ParentID       string         `gorm:"size:30;index" json:"parent_id,omitempty"`
+	Title          string         `gorm:"size:255;not null" json:"title"`
+	Description    string         `gorm:"type:text" json:"description,omitempty"`
+	Status         string         `gorm:"size:20;default:open;index;index:idx_status_priority" json:"status"`
+	Priority       int            `gorm:"index;index:idx_status_priority" json:"priority"` // 0=highest, 4=lowest
+	Type           string         `gorm:"size:20;default:task;index" json:"type"`
+	Labels         StringSlice    `gorm:"type:text" json:"labels,omitempty"`
+	Assignee       string         `gorm:"size:100;index" json:"assignee,omitempty"`
+	Notes          string         `gorm:"type:text" json:"notes,omitempty"`
+	CloseReason    string         `gorm:"size:255" json:"close_reason,omitempty"`
+	Summary        string         `gorm:"type:text" json:"summary,omitempty"`
+	Compacted      bool           `gorm:"default:false" json:"compacted"`
+	Synced         bool           `gorm:"default:false;index" json:"synced"`
+	Source         string         `gorm:"size:20;default:local;index" json:"source"` // local, github, or beads
+	SourceID       *string        `gorm:"size:64;uniqueIndex" json:"source_id,omitempty"`
+	TokensUsed     int64          `gorm:"default:0" json:"tokens_used"`
+	TokensBudget   int64          `gorm:"default:0" json:"tokens_budget"`
+	ContextSummary string         `gorm:"type:text" json:"context_summary,omitempty"`
+	CreatedAt      time.Time      `gorm:"autoCreateTime" json:"created_at"`
+	UpdatedAt      time.Time      `gorm:"autoUpdateTime" json:"updated_at"`
+	ClosedAt       *time.Time     `json:"closed_at,omitempty"`
+	DeletedAt      gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 // StringSlice is a custom type for storing string slices as JSON in the database
@@ -298,4 +319,13 @@ func (t *Task) PriorityString() string {
 	default:
 		return "Unknown"
 	}
+}
+
+// TokenUsageString returns a human-readable token usage string
+func (t *Task) TokenUsageString() string {
+	if t.TokensBudget > 0 {
+		pct := float64(t.TokensUsed) * 100 / float64(t.TokensBudget)
+		return fmt.Sprintf("%d/%d (%.0f%%)", t.TokensUsed, t.TokensBudget, pct)
+	}
+	return fmt.Sprintf("%d", t.TokensUsed)
 }

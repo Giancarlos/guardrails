@@ -1,7 +1,10 @@
 package ioformat
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 
@@ -222,4 +225,80 @@ func applyTrailer(issue *BeadsIssue, trailer string) {
 	issue.DueAt = tr.DueAt
 	issue.DeferUntil = tr.DeferUntil
 	issue.ExternalRef = tr.ExternalRef
+}
+
+// GurRecord is one decoded line (or array element) of a native gur export.
+// Fields keeps the raw per-key JSON so an import can tell "absent" from
+// "explicitly zero" and update only what the file actually carries.
+type GurRecord struct {
+	Task         models.Task
+	Fields       map[string]json.RawMessage
+	Dependencies []ExportDep
+	Line         int
+}
+
+// Has reports whether the record carried the given JSON field.
+func (r GurRecord) Has(field string) bool {
+	_, ok := r.Fields[field]
+	return ok
+}
+
+// DecodeGurJSONL reads the output of 'gur export --format gur-jsonl'.
+// Unlike the beads decoder it is strict: a malformed line fails the whole
+// import, because a partial restore of your own data is worse than none.
+func DecodeGurJSONL(r io.Reader) ([]GurRecord, error) {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
+
+	var out []GurRecord
+	line := 0
+	for sc.Scan() {
+		line++
+		raw := bytes.TrimSpace(sc.Bytes())
+		if len(raw) == 0 {
+			continue
+		}
+		rec, err := decodeGurRecord(raw, line)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rec)
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("read input: %w", err)
+	}
+	return out, nil
+}
+
+// DecodeGurJSON reads the output of 'gur export --format json' (one array).
+func DecodeGurJSON(r io.Reader) ([]GurRecord, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("read input: %w", err)
+	}
+	var elems []json.RawMessage
+	if err := json.Unmarshal(data, &elems); err != nil {
+		return nil, fmt.Errorf("parse JSON array: %w", err)
+	}
+	out := make([]GurRecord, 0, len(elems))
+	for i, raw := range elems {
+		rec, err := decodeGurRecord(raw, i+1)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
+func decodeGurRecord(raw []byte, line int) (GurRecord, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return GurRecord{}, fmt.Errorf("line %d: parse object: %w", line, err)
+	}
+	var et ExportTask
+	if err := json.Unmarshal(raw, &et); err != nil {
+		return GurRecord{}, fmt.Errorf("line %d: parse task: %w", line, err)
+	}
+	return GurRecord{Task: et.Task, Fields: fields, Dependencies: et.Dependencies, Line: line}, nil
 }

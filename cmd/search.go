@@ -23,7 +23,8 @@ func init() {
 
 // escapeLikePattern escapes SQL LIKE wildcards in user input
 func escapeLikePattern(s string) string {
-	// Escape special LIKE characters: % and _
+	// Escape the escape character first, then special LIKE characters: % and _
+	s = strings.ReplaceAll(s, "\\", "\\\\")
 	s = strings.ReplaceAll(s, "%", "\\%")
 	s = strings.ReplaceAll(s, "_", "\\_")
 	return s

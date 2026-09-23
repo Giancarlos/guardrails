@@ -16,45 +16,68 @@ import (
 var (
 	exportFormat        string
 	exportOutput        string
+	exportStatus        string
 	exportIncludeAll    bool
 	exportIncludeClosed bool
 	exportExcludeLabels []string
 )
 
+// exportFormats lists every accepted --format value. "md" is an alias for
+// "markdown". Only the JSONL shapes carry dependencies.
+var exportFormats = map[string]bool{
+	"gur-jsonl": true, "beads-jsonl": true,
+	"json": true, "csv": true, "markdown": true, "md": true,
+}
+
 var exportCmd = &cobra.Command{
 	Use:   "export",
 	Short: "Export tasks to JSONL",
-	Long: `Export all tasks (and their dependencies) to JSONL.
+	Long: `Export tasks (and, for the JSONL shapes, their dependencies).
 
 Formats:
   gur-jsonl     Native guardrails shape (lossless; default).
   beads-jsonl   beads 1.0.x compatible shape for interop. Lossy on:
                 - archived status (emitted as closed + "archived" label)
-                - hierarchical subtask IDs (flattened)`,
+                - hierarchical subtask IDs (flattened)
+  json          Indented JSON array; round-trips via 'gur import --format gur-json'.
+  csv           Spreadsheet-friendly summary columns (lossy).
+  markdown, md  Readable document (lossy).`,
 	RunE: runExport,
 }
 
 func init() {
 	rootCmd.AddCommand(exportCmd)
-	exportCmd.Flags().StringVar(&exportFormat, "format", "gur-jsonl", "Output format (gur-jsonl, beads-jsonl)")
+	exportCmd.Flags().StringVar(&exportFormat, "format", "gur-jsonl", "Output format (gur-jsonl, beads-jsonl, json, csv, markdown)")
 	exportCmd.Flags().StringVarP(&exportOutput, "output", "o", "", "Output file path (default: stdout)")
 	exportCmd.Flags().BoolVar(&exportIncludeAll, "all", false, "Include archived tasks")
 	exportCmd.Flags().BoolVar(&exportIncludeClosed, "include-closed", true, "Include closed tasks")
 	exportCmd.Flags().StringSliceVar(&exportExcludeLabels, "exclude-labels", nil, "Skip tasks carrying any of these labels (comma-separated or repeated)")
+	exportCmd.Flags().StringVar(&exportStatus, "status", "", "Export only tasks with this status")
 }
 
 func runExport(cmd *cobra.Command, args []string) error {
-	if exportFormat != "gur-jsonl" && exportFormat != "beads-jsonl" {
-		return fmt.Errorf("unsupported --format %q (want gur-jsonl or beads-jsonl)", exportFormat)
+	if !exportFormats[exportFormat] {
+		return fmt.Errorf("unsupported --format %q (want gur-jsonl, beads-jsonl, json, csv, or markdown)", exportFormat)
+	}
+	if exportStatus != "" && !models.IsValidStatus(exportStatus) {
+		return fmt.Errorf("invalid --status %q (want open, in_progress, closed, or archived)", exportStatus)
 	}
 
 	database := db.GetDB()
-	q := database.Model(&models.Task{})
-	if !exportIncludeAll {
-		q = q.Where("status != ?", models.StatusArchived)
-	}
-	if !exportIncludeClosed {
-		q = q.Where("status NOT IN ?", []string{models.StatusClosed, models.StatusArchived})
+	// Ordering matters for the human-facing shapes; the JSONL encoders are
+	// order-insensitive, so one deterministic order serves every format.
+	q := database.Model(&models.Task{}).Order("priority ASC, created_at DESC")
+	if exportStatus != "" {
+		// An explicit --status is the whole selection: applying the implicit
+		// archived/closed exclusions on top would silently return nothing.
+		q = q.Where("status = ?", exportStatus)
+	} else {
+		if !exportIncludeAll {
+			q = q.Where("status != ?", models.StatusArchived)
+		}
+		if !exportIncludeClosed {
+			q = q.Where("status NOT IN ?", []string{models.StatusClosed, models.StatusArchived})
+		}
 	}
 	var tasks []models.Task
 	if err := q.Find(&tasks).Error; err != nil {
@@ -87,6 +110,12 @@ func runExport(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("query tasks for id map: %w", err)
 		}
 		err = ioformat.EncodeBeadsJSONL(w, tasks, depsByChild, ioformat.BuildBeadsIDMap(allTasks))
+	case "json":
+		err = ioformat.EncodeJSON(w, tasks)
+	case "csv":
+		err = ioformat.EncodeCSV(w, tasks)
+	case "markdown", "md":
+		err = ioformat.EncodeMarkdown(w, tasks)
 	}
 	if err != nil {
 		return fmt.Errorf("encode: %w", err)
